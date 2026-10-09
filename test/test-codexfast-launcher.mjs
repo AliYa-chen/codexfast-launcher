@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,7 @@ function run(args, env = {}) {
       ...process.env,
       CODEXFAST_MODEL_ID: "",
       CODEXFAST_MODEL_DISPLAY_NAME: "",
+      CODEXFAST_ULTRAFAST: "",
       ...(fs.existsSync(bundledTarball) ? { CODEXFAST_PACKAGE_TARBALL: bundledTarball } : {}),
       ...env,
     },
@@ -51,6 +53,7 @@ const preparedSource = fs.readFileSync(preparedLauncher, "utf8");
 assert.doesNotMatch(preparedSource, /codexfast-model-override-current-extension/);
 assert.match(preparedSource, /codexfast-service-tier-request-personal-access-token-extension/);
 assert.match(preparedSource, /codexfast-runtime-extension-filter-bridge/);
+assert.match(preparedSource, /codexfast-ultrafast-extension/);
 assert.match(
   preparedSource,
   /function childEnvWithAutomaticUpdateSetting\(env = process\.env\) \{\n    \/\/ codexfast-launcher: remove an inherited codexfast hook/,
@@ -135,6 +138,124 @@ assert.match(
 );
 assert.ok(filteredPersonalAccessTokenPatch.patchedLabels.includes("Speed service tier request allowance"));
 
+const ultrafastLabel = "Ultrafast model service tiers";
+const currentUltrafastModelListBody =
+  "select:({data:n})=>Ali({additionalAvailableModels:new Set(e),apiKeyDaybreakSupported:h,authMethod:t,availableModels:v.availableModels,defaultModel:v.defaultModel,enabledReasoningEfforts:_,hasConfiguredModelCatalog:r,includeUltraReasoningEffort:y,isCustomModelProvider:o,models:n,useHiddenModels:v.useHiddenModels})";
+const currentUltrafastSelectorState = {
+  e: ["gpt-6.1-sol"],
+  h: true,
+  t: "personalAccessToken",
+  v: { availableModels: new Set(["gpt-6.1-sol"]), defaultModel: "gpt-6.1-sol", useHiddenModels: false },
+  _: new Set(["low", "high"]),
+  r: true,
+  y: false,
+  o: true,
+};
+
+function compileCurrentUltrafastSelector(body) {
+  assert.ok(body.startsWith("select:"));
+  return new Function(
+    "Ali",
+    ...Object.keys(currentUltrafastSelectorState),
+    `return (${body.slice("select:".length)});`,
+  )((fields) => fields, ...Object.values(currentUltrafastSelectorState));
+}
+
+function assertUltrafastModelBehavior(applyPatches) {
+  const result = applyPatches("app://-/assets/use-model-list.js", currentUltrafastModelListBody);
+  assert.notEqual(result.content, currentUltrafastModelListBody);
+  assert.match(result.content, /codexfast-ultrafast-model-tiers/);
+  assert.ok(result.patchedLabels.includes(ultrafastLabel));
+  const select = compileCurrentUltrafastSelector(result.content);
+  const priority = Object.freeze({ id: "priority", name: "Fast", description: "1.5x speed", extra: "keep" });
+  const standard = Object.freeze({ id: "standard", name: "Standard", description: "Default" });
+  const existingUltrafast = Object.freeze({ id: "ultrafast", name: "Custom ultrafast", description: "Preserve" });
+  const namedUltrafast = Object.freeze({ id: "custom-ultrafast", name: "Ultrafast", description: "Preserve name" });
+  const models = Object.freeze([
+    Object.freeze({ model: "gpt-6.1-sol", displayName: "GPT-6.1 Sol", serviceTiers: Object.freeze([standard, priority]) }),
+    Object.freeze({ model: "standard-only", serviceTiers: Object.freeze([standard]) }),
+    Object.freeze({ model: "no-tiers" }),
+    Object.freeze({ model: "already-ultrafast", serviceTiers: Object.freeze([priority, existingUltrafast]) }),
+    Object.freeze({ model: "named-ultrafast", serviceTiers: Object.freeze([priority, namedUltrafast]) }),
+    Object.freeze({ model: "fast-id", serviceTiers: Object.freeze([Object.freeze({ id: "fast", name: "Custom fast" })]) }),
+    Object.freeze({ model: "fast-name", serviceTiers: Object.freeze([Object.freeze({ id: "custom-fast", name: "Fast" })]) }),
+    Object.freeze({ model: "priority-name", serviceTiers: Object.freeze([Object.freeze({ id: "custom-priority", name: "Priority" })]) }),
+  ]);
+  const selected = select({ data: models });
+  assert.deepEqual(selected.additionalAvailableModels, new Set(currentUltrafastSelectorState.e));
+  assert.equal(selected.apiKeyDaybreakSupported, currentUltrafastSelectorState.h);
+  assert.equal(selected.authMethod, currentUltrafastSelectorState.t);
+  assert.strictEqual(selected.availableModels, currentUltrafastSelectorState.v.availableModels);
+  assert.equal(selected.defaultModel, currentUltrafastSelectorState.v.defaultModel);
+  assert.strictEqual(selected.enabledReasoningEfforts, currentUltrafastSelectorState._);
+  assert.equal(selected.hasConfiguredModelCatalog, currentUltrafastSelectorState.r);
+  assert.equal(selected.includeUltraReasoningEffort, currentUltrafastSelectorState.y);
+  assert.equal(selected.isCustomModelProvider, currentUltrafastSelectorState.o);
+  assert.equal(selected.useHiddenModels, currentUltrafastSelectorState.v.useHiddenModels);
+  assert.deepEqual(selected.models.map((model) => model.model), models.map((model) => model.model));
+  assert.equal(selected.models[0].displayName, models[0].displayName);
+  assert.notStrictEqual(selected.models[0], models[0]);
+  assert.notStrictEqual(selected.models[0].serviceTiers, models[0].serviceTiers);
+  assert.strictEqual(selected.models[0].serviceTiers[0], standard);
+  assert.strictEqual(selected.models[0].serviceTiers[1], priority);
+  assert.deepEqual(selected.models[0].serviceTiers[2], { id: "ultrafast", name: "Ultrafast", description: "" });
+  assert.equal(models[0].serviceTiers.length, 2, "the original catalog must remain unchanged");
+  for (const index of [1, 2, 3, 4]) {
+    assert.strictEqual(selected.models[index], models[index]);
+  }
+  for (const index of [5, 6, 7]) {
+    assert.strictEqual(selected.models[index].serviceTiers[0], models[index].serviceTiers[0]);
+    assert.deepEqual(selected.models[index].serviceTiers[1], { id: "ultrafast", name: "Ultrafast", description: "" });
+  }
+  const repeatedSelection = select({ data: selected.models });
+  for (let index = 0; index < selected.models.length; index += 1) {
+    assert.strictEqual(repeatedSelection.models[index], selected.models[index]);
+  }
+  const repeatedPatch = applyPatches("app://-/assets/use-model-list.js", result.content);
+  assert.equal(repeatedPatch.content, result.content);
+  assert.ok(repeatedPatch.alreadyPatchedLabels.includes(ultrafastLabel));
+  assert.ok(!repeatedPatch.patchedLabels.includes(ultrafastLabel));
+  const unrelatedBody = "const model={model:`gpt-6.1-sol`,serviceTiers:[{id:`priority`,name:`Fast`}]};";
+  const unrelatedResult = applyPatches("app://-/assets/unrelated.js", unrelatedBody);
+  assert.equal(unrelatedResult.content, unrelatedBody);
+  assert.ok(!unrelatedResult.matchedLabels.includes(ultrafastLabel));
+}
+
+assertUltrafastModelBehavior(applyDefaultRuntimePatchesToBody);
+assertUltrafastModelBehavior(applyFilteredRuntimePatchesToBody);
+
+const ultrafastDisabledPrepared = run(["prepare"], { CODEXFAST_ULTRAFAST: "0" });
+assert.equal(ultrafastDisabledPrepared.status, 0, output(ultrafastDisabledPrepared));
+const ultrafastDisabledPreparedLauncher = output(ultrafastDisabledPrepared).match(/"preparedLauncher": "([^"]+)"/)?.[1];
+assert.ok(ultrafastDisabledPreparedLauncher, output(ultrafastDisabledPrepared));
+const ultrafastDisabledSource = fs.readFileSync(ultrafastDisabledPreparedLauncher, "utf8");
+assert.doesNotMatch(ultrafastDisabledSource, /codexfast-ultrafast-extension/);
+const ultrafastDisabledPatcherSourceLiteral = ultrafastDisabledSource.match(/const __PATCHER_SOURCE__ = ((?:"(?:[^"\\]|\\.)*"));/)?.[1];
+assert.ok(ultrafastDisabledPatcherSourceLiteral);
+const applyUltrafastDisabledPatches = new Function(
+  `${JSON.parse(ultrafastDisabledPatcherSourceLiteral)}\nreturn applyRuntimePatchesToBody;`,
+)();
+assert.equal(
+  applyUltrafastDisabledPatches("app://-/assets/use-model-list.js", currentUltrafastModelListBody).content,
+  currentUltrafastModelListBody,
+);
+
+const oldAppBundle = fs.mkdtempSync(path.join(os.tmpdir(), "codexfast-launcher-old-app-test-"));
+try {
+  fs.mkdirSync(path.join(oldAppBundle, "Contents"));
+  fs.writeFileSync(
+    path.join(oldAppBundle, "Contents", "Info.plist"),
+    '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>26.1001.10000</string><key>CFBundleVersion</key><string>1</string><key>CFBundleExecutable</key><string>Codex</string></dict></plist>',
+  );
+  const oldAppPrepared = run(["prepare"], { CODEXFAST_APP_BUNDLE: oldAppBundle });
+  assert.equal(oldAppPrepared.status, 0, output(oldAppPrepared));
+  const oldAppPreparedLauncher = output(oldAppPrepared).match(/"preparedLauncher": "([^"]+)"/)?.[1];
+  assert.ok(oldAppPreparedLauncher, output(oldAppPrepared));
+  assert.doesNotMatch(fs.readFileSync(oldAppPreparedLauncher, "utf8"), /codexfast-ultrafast-extension/);
+} finally {
+  fs.rmSync(oldAppBundle, { recursive: true, force: true });
+}
+
 const modelOverridePrepared = run(["prepare"], {
   CODEXFAST_MODEL_ID: "gpt-5.6",
   CODEXFAST_MODEL_DISPLAY_NAME: "GPT-5.6",
@@ -170,5 +291,30 @@ assert.match(modelListPatchWithAdditionalModels.content, /additionalAvailableMod
 assert.match(modelListPatchWithAdditionalModels.content, /availableModels:new Set\(\[\.\.\.n\.availableModels,\"gpt-5\.6\"\]\)/);
 assert.match(modelListPatchWithAdditionalModels.content, /isCustomModelProvider:i/);
 assert.ok(modelListPatchWithAdditionalModels.patchedLabels.includes("GPT-5.6 model list current"));
+
+const filteredModelOverridePatcherSource = runtimePatcherSourceForVersion(patcherSource, "test-version");
+const applyFilteredModelOverridePatches = new Function(
+  `${filteredModelOverridePatcherSource}\nreturn applyRuntimePatchesToBody;`,
+)();
+const filteredModelOverridePatch = applyFilteredModelOverridePatches(
+  "app://-/assets/app-main.js",
+  currentModelListBodyWithAdditionalModels,
+);
+const modelOverrideCatalog = Object.freeze([
+  Object.freeze({ model: "gpt-5.5", serviceTiers: Object.freeze([{ id: "priority", name: "Fast", description: "" }]) }),
+]);
+for (const overridePatch of [modelListPatchWithAdditionalModels, filteredModelOverridePatch]) {
+  assert.match(overridePatch.content, /codexfast-ultrafast-model-tiers/);
+  assert.ok(overridePatch.patchedLabels.includes(ultrafastLabel));
+  const modelOverrideSelector = new Function(
+    "Jv", "e", "t", "n", "c", "l", "i",
+    `return (${overridePatch.content.split("select:")[1]});`,
+  )((fields) => fields, [], "personalAccessToken", { availableModels: new Set(), defaultModel: "gpt-5.5", useHiddenModels: false }, new Set(["medium"]), false, false);
+  const overriddenModel = modelOverrideSelector({ data: modelOverrideCatalog }).models.find((model) => model.model === "gpt-5.6");
+  assert.ok(overriddenModel);
+  assert.equal(overriddenModel.serviceTiers.filter((tier) => tier.id === "ultrafast").length, 1);
+}
+assert.equal(modelOverrideCatalog[0].model, "gpt-5.5");
+assert.equal(modelOverrideCatalog[0].serviceTiers.length, 1);
 
 console.log("codexfast-launcher tests passed");

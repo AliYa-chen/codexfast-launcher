@@ -4,6 +4,10 @@
   "description": "Runtime launcher wrapper for Codex/ChatGPT Desktop on macOS.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AliYa-chen/codexfast-launcher.git"
+  },
   "bin": {
     "codexfast-launcher": "bin/codexfast-launcher.mjs"
   },

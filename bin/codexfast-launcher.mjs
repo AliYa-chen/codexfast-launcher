@@ -291,10 +291,82 @@ function addCurrentModelRuntimePatch(source) {
   return replacePatcherSource(source, (patcherSource) => `${patcherSource}${currentModelRuntimePatchSource(modelId, displayName)}`);
 }
 
+// Use the client's native Ultrafast UI and wire value; keep the model catalog intact.
+function modelsWithUltrafastServiceTier(models) {
+  if (!Array.isArray(models)) return models;
+  return models.map((model) => {
+    const tiers = model?.serviceTiers;
+    if (!Array.isArray(tiers)) return model;
+    const tierName = (tier) => typeof tier?.name === "string" ? tier.name.trim().toLowerCase() : "";
+    if (tiers.some((tier) => tier?.id === "ultrafast" || tierName(tier) === "ultrafast")) return model;
+    const hasFast = tiers.some((tier) =>
+      tier?.id === "priority" || tier?.id === "fast" || tierName(tier) === "fast" || tierName(tier) === "priority",
+    );
+    if (!hasFast) return model;
+    return {
+      ...model,
+      serviceTiers: [...tiers, { id: "ultrafast", name: "Ultrafast", description: "" }],
+    };
+  });
+}
+
+function ultrafastRuntimePatchSource() {
+  return String.raw`
+// codexfast-ultrafast-extension
+const CODEXFAST_ULTRAFAST_LABEL = "Ultrafast model service tiers";
+const CODEXFAST_ULTRAFAST_MARKER = "codexfast-ultrafast-model-tiers";
+const CODEXFAST_ULTRAFAST_MODELS_TRANSFORM = ${JSON.stringify(modelsWithUltrafastServiceTier.toString())};
+// Match the model selector's fields, including newer catalog and API-key flags.
+// The expression may already contain the explicitly enabled model override.
+const CODEXFAST_ULTRAFAST_SELECTOR_SIGNATURE = /(select:\(\{data:([A-Za-z_$][\w$]*)\}\)=>[A-Za-z_$][\w$]*\(\{(?=[^{}]*\bauthMethod:)(?=[^{}]*\bavailableModels:)(?=[^{}]*\bdefaultModel:)(?=[^{}]*\bincludeUltraReasoningEffort:)[^{}]*\bmodels:)([\s\S]*?)(,useHiddenModels:[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?\}\))/g;
+function codexfastApplyUltrafastRuntimePatchesToBody(_resourcePath, body) {
+    let changed = false;
+    const content = body.replace(CODEXFAST_ULTRAFAST_SELECTOR_SIGNATURE, (match, prefix, dataVar, modelsExpression, suffix) => {
+        if (modelsExpression !== dataVar && !modelsExpression.startsWith("/*codexfast-model-override-list*/")) return match;
+        changed = true;
+        return prefix + "/*" + CODEXFAST_ULTRAFAST_MARKER + "*/(" + CODEXFAST_ULTRAFAST_MODELS_TRANSFORM + ")(" + modelsExpression + ")" + suffix;
+    });
+    const alreadyPatched = !changed && body.includes("/*" + CODEXFAST_ULTRAFAST_MARKER + "*/");
+    return {
+        content,
+        matchedLabels: changed || alreadyPatched ? [CODEXFAST_ULTRAFAST_LABEL] : [],
+        patchedLabels: changed ? [CODEXFAST_ULTRAFAST_LABEL] : [],
+        alreadyPatchedLabels: alreadyPatched ? [CODEXFAST_ULTRAFAST_LABEL] : [],
+    };
+}
+const codexfastPreviousApplyRuntimePatchesToBodyForUltrafast = applyRuntimePatchesToBody;
+applyRuntimePatchesToBody = function(resourcePath, body) {
+    const baseResult = codexfastPreviousApplyRuntimePatchesToBodyForUltrafast(resourcePath, body);
+    const extensionResult = codexfastApplyUltrafastRuntimePatchesToBody(resourcePath, baseResult.content);
+    return {
+        content: extensionResult.content,
+        matchedLabels: [...baseResult.matchedLabels, ...extensionResult.matchedLabels],
+        patchedLabels: [...baseResult.patchedLabels, ...extensionResult.patchedLabels],
+        alreadyPatchedLabels: [...baseResult.alreadyPatchedLabels, ...extensionResult.alreadyPatchedLabels],
+    };
+};
+`;
+}
+
+function addUltrafastRuntimePatch(source, version) {
+  if (process.env.CODEXFAST_ULTRAFAST === "0") return source;
+  // Earlier clients do not have the native Ultrafast label, icon and request schema.
+  const minimum = [26, 1002, 52244];
+  const actual = version.split(".").map(Number);
+  if (actual.length !== 3 || actual.some((part) => !Number.isFinite(part))) return source;
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (actual[index] < minimum[index]) return source;
+    if (actual[index] > minimum[index]) break;
+  }
+  if (source.includes("codexfast-ultrafast-extension")) return source;
+  return replacePatcherSource(source, (patcherSource) => `${patcherSource}${ultrafastRuntimePatchSource()}`);
+}
+
 function preserveRuntimePatchExtensionsAfterTargetFiltering(source) {
   const hasServiceTierExtension = source.includes("codexfast-service-tier-request-personal-access-token-extension");
   const hasCurrentModelExtension = source.includes("codexfast-model-override-current-extension");
-  if (!hasServiceTierExtension && !hasCurrentModelExtension) return source;
+  const hasUltrafastExtension = source.includes("codexfast-ultrafast-extension");
+  if (!hasServiceTierExtension && !hasCurrentModelExtension && !hasUltrafastExtension) return source;
   const before = [
     "  return { content, matchedLabels, patchedLabels, alreadyPatchedLabels };",
     "};`;",
@@ -316,6 +388,9 @@ function preserveRuntimePatchExtensionsAfterTargetFiltering(source) {
     "  }",
     '  if (typeof codexfastApplyCurrentModelRuntimePatchesToBody === "function") {',
     "    codexfastExtendedResult = codexfastMergeFilteredResult(codexfastExtendedResult, codexfastApplyCurrentModelRuntimePatchesToBody(_resourcePath, codexfastExtendedResult.content));",
+    "  }",
+    '  if (typeof codexfastApplyUltrafastRuntimePatchesToBody === "function") {',
+    "    codexfastExtendedResult = codexfastMergeFilteredResult(codexfastExtendedResult, codexfastApplyUltrafastRuntimePatchesToBody(_resourcePath, codexfastExtendedResult.content));",
     "  }",
     "  return codexfastExtendedResult;",
     "};`;",
@@ -477,6 +552,7 @@ function prepareLauncher({ isolatedProfile = null } = {}) {
   source = disableAutomaticUpdateRuntimeTargets(source);
   source = addServiceTierRequestAllowanceRuntimePatch(source);
   source = addCurrentModelRuntimePatch(source);
+  source = addUltrafastRuntimePatch(source, info.version);
   source = preserveRuntimePatchExtensionsAfterTargetFiltering(source);
   source = addUserDataDir(source, isolatedProfile);
 

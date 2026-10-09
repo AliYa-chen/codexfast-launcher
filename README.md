@@ -6,10 +6,11 @@
 
 ## 当前兼容情况
 
-以下是截至 2026-10-06 的验证结果：
+以下是截至 2026-10-09 的验证结果；当前已安装 ChatGPT Desktop 版本为 `26.1002.52244`（构建号 `13536`）：
 
 | 客户端版本 | 客户端表现 | 本项目的作用 |
 | --- | --- | --- |
+| `26.1002.52244+13536` | 客户端原生包含 Ultrafast 的菜单、图标和请求档位；Fast 提示为 1.5 倍速度 | 使用 `codexfast 0.79.0` 加本项目扩展，默认为已有 Fast 档位的模型补充 Ultrafast，保留模型 ID 和原有档位；准备自测通过，Ultrafast 选项已由使用者确认显示正常。服务端请求及实际速度尚未验证 |
 | `26.707.31428+5059` | 上一版本可能不显示 GPT-5.6，Fast 入口也不可见 | 补充 GPT-5.6 模型菜单和 Fast 相关入口 |
 | `26.707.41301+5103` | 官方已恢复模型显示，但 Fast 入口仍不可见 | 主要补充 Fast 相关入口，并保留模型菜单兼容处理 |
 | `26.707.61608+5200` | 官方已内置 GPT-5.6；中转站、API Key 等场景仍可能缺少 Fast | 已实测 Fast 设置、Speed 菜单、`/fast` 和 Service Tier 相关运行时目标均能命中 |
@@ -61,9 +62,10 @@ node -v
 
 ## 快速开始
 
-将项目文件放到本地后，进入项目目录：
+克隆项目并进入目录：
 
 ```zsh
+git clone https://github.com/AliYa-chen/codexfast-launcher.git
 cd codexfast-launcher
 node bin/codexfast-launcher.mjs relaunch
 ```
@@ -92,17 +94,20 @@ node bin/codexfast-launcher.mjs status
 
 新版 App 可能在 `Runtime launch completed.` 之后才加载主界面资源，因此最初的 `Patched targets:` 可能为空。维护检查可用 `CODEXFAST_DEBUG_RUNTIME=1 node bin/codexfast-launcher.mjs isolated-test` 观察延迟资源的实际命中结果；日常启动不需要开启调试输出。
 
-随后可在 App 中检查 Fast 模式。默认运行时的 `Patched targets:` 不应出现 `GPT-... model` 条目，模型菜单应保持为上游实际返回的内容。
+随后可在 App 的模型菜单中打开速度（Speed）选项。`26.1002.52244` 及之后的客户端，启动器默认为已有 Fast 档位的模型补充 **Ultrafast**，沿用客户端原生文案和图标，不修改模型 ID、不增加模型，也不替换已有档位。已经包含 Ultrafast 的模型不会重复添加；没有 Fast 的模型保持原样。
 
-`Runtime launch completed.` 和隔离测试通过只证明客户端运行时补丁可加载；是否真正使用 Fast，还取决于当前模型的 Service Tier 选项及账号或中转站服务端是否接受该请求。
+默认运行时的 `Patched targets:` 不应出现 `GPT-... model` 条目；新增扩展命中时会出现 `Ultrafast model service tiers`。Ultrafast 是独立的速度档位，选择后请求使用 `serviceTier: "ultrafast"`，没有承诺固定的倍速。
+
+`Runtime launch completed.` 和隔离测试通过只证明客户端运行时补丁可加载；Fast 或 Ultrafast 是否真正生效，取决于账号或中转站服务端是否接受该档位。若选择 Ultrafast 后请求失败，请切回 Fast 或 Standard。
 
 为保证 App 内置能力正常，启动器不会向 ChatGPT/Codex 进程注入 `NODE_OPTIONS`；如果启动命令已经从旧会话继承 codexfast 的主进程钩子，也会只移除该钩子并保留其他 Node 参数。终端命令、Chrome 接管、Computer Use 等子进程因此不会继续继承该钩子。自动更新保持官方默认行为，启动器不再添加“停用自动更新”设置。
 
 ## App 更新后
 
-更新本地启动器文件，然后重新启动：
+进入项目目录，更新启动器并重新启动：
 
 ```zsh
+git pull --ff-only
 node bin/codexfast-launcher.mjs status
 node bin/codexfast-launcher.mjs relaunch
 ```
@@ -110,6 +115,14 @@ node bin/codexfast-launcher.mjs relaunch
 如果新版 App 不再显示 Fast 模式或目标模型，请记录 App 版本和终端里的 `Patched targets:` 以便排查。分享记录前先删除用户名、目录路径等隐私信息。
 
 ## 可选设置
+
+关闭 Ultrafast 扩展，保留原有 Fast 行为：
+
+```zsh
+CODEXFAST_ULTRAFAST=0 node bin/codexfast-launcher.mjs relaunch
+```
+
+较旧客户端不加载 Ultrafast 扩展。默认模型列表不做 ID 或名称覆盖，仅补充符合条件的速度档位。
 
 显式覆盖模型（默认关闭）：
 

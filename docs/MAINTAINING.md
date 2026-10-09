@@ -10,12 +10,13 @@
 
 ## 适配范围
 
-项目主要处理通过中转站、自定义 Provider 或 API Key 使用 Codex 时，Fast 入口因认证路径或客户端判断而不可见的问题。默认启动必须保留上游 `model/list` 结果；模型覆盖仅作为显式启用的兼容选项。官方 ChatGPT 登录路径应单独验证，不应把本项目描述为所有用户都必须使用的工具。
+项目主要处理通过中转站、自定义 Provider 或 API Key 使用 Codex 时，Fast 入口因认证路径或客户端判断而不可见的问题。默认启动保留上游模型的 ID、名称、数量、顺序和原有档位；在 `26.1002.52244` 及之后的客户端，只为已有 Fast 的模型补充 Ultrafast。模型覆盖仅作为显式启用的兼容选项。官方 ChatGPT 登录路径应单独验证，不应把本项目描述为所有用户都必须使用的工具。
 
 当前适配记录：
 
 | 客户端版本 | 验证结果 |
 | --- | --- |
+| `26.1002.52244+13536` | `codexfast 0.79.0` 加本项目 Ultrafast 扩展；已确认原生菜单、图标、`ultrafast` 请求值，准备自测通过，Ultrafast 选项已由使用者确认显示正常。本轮未完成全量资源扫描；服务端请求和实际速度尚未验证 |
 | `26.707.31428+5059` | 可补充 GPT-5.6 模型菜单及 Fast 相关入口 |
 | `26.707.41301+5103` | 官方模型显示已恢复；关键 Fast、service tier 和模型兼容补丁目标仍能命中 |
 | `26.707.61608+5200` | 使用 `codexfast 0.50.0` 扫描真实 `app.asar` 中 4,951 个 JS 文件；Fast、Speed、`/fast`、service tier 和自动更新相关目标全部命中，缺失目标为 0 |
@@ -107,9 +108,12 @@ node bin/codexfast-launcher.mjs relaunch --dry-run
 
 - `CODEXFAST_MODEL_ID`：显式覆盖模型 ID；默认未设置，不修改上游模型列表。
 - `CODEXFAST_MODEL_DISPLAY_NAME`：覆盖模型显示名称。
+- `CODEXFAST_ULTRAFAST`：默认在支持版本补充 Ultrafast；设为 `0` 可关闭。
 - `CODEXFAST_APP_BUNDLE`：指定待检测的 App 路径。
 - `CODEXFAST_PACKAGE_TARBALL`：使用本地 `codexfast` tarball。
 - `CODEXFAST_DEBUG_RUNTIME`：启用上游运行时调试输出。
+
+Ultrafast 扩展匹配 `model/list` 的模型 selector，在本地派生模型中追加 `{ id: "ultrafast", name: "Ultrafast", description: "" }`。它不修改原始数组或模型对象、不改写已有档位，不为没有 Fast 的模型添加新档位。当前客户端使用原生 Ultrafast 文案、图标和请求 schema；显式选择后保留 `ultrafast` 值。`preserveRuntimePatchExtensionsAfterTargetFiltering()` 必须在模型覆盖扩展之后继续调用 Ultrafast 扩展，避免上游版本过滤器覆盖补丁。回归测试需覆盖新版 selector 字段、已有档位保留、幂等、关闭开关、旧版本和过滤后的行为。客户端静态支持不能证明服务端接收或加速。
 
 上游自动更新钩子通过 `NODE_OPTIONS=--require=.../main-process-hook.cjs` 注入 App。App Server 会复制主进程的完整环境，导致终端命令、Chrome 接管和 Computer Use 等子进程也加载该钩子。本项目会让 `childEnvWithAutomaticUpdateSetting()` 不再新增钩子，并清除可能从旧会话继承的 `main-process-hook.cjs` 参数，同时保留其他 `NODE_OPTIONS`；CDP 运行时目标也会排除 `UPDATE_TARGET_SPECS`，自动更新保持官方默认行为。App Server 可由 App 资源目录外的 `codex` 可执行文件启动，隔离测试按父进程和 `app-server` 命令识别它。修改相关逻辑时必须运行 `npm test`，确认准备后的启动器不再注入钩子且不再应用自动更新界面补丁；还要运行 `isolated-test`，确认输出 `Isolated child environment self-test passed`。
 
