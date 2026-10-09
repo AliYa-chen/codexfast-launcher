@@ -227,6 +227,17 @@ const CODEXFAST_MODEL_OVERRIDE_TARGET_LITERAL = JSON.stringify(CODEXFAST_MODEL_O
 const CODEXFAST_MODEL_OVERRIDE_DISPLAY_LITERAL = JSON.stringify(CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME);
 const CURRENT_MODEL_LIST_SELECT_SIGNATURE = /select:\\(\\{data:([A-Za-z_$][\\w$]*)\\}\\)=>([A-Za-z_$][\\w$]*)\\(\\{authMethod:([A-Za-z_$][\\w$]*),availableModels:new Set\\(([A-Za-z_$][\\w$]*)\\),defaultModel:([A-Za-z_$][\\w$]*),enabledReasoningEfforts:([A-Za-z_$][\\w$]*),includeUltraReasoningEffort:([A-Za-z_$][\\w$]*),models:\\1,useHiddenModels:([A-Za-z_$][\\w$]*)\\}\\)/;
 const CURRENT_MODEL_LIST_SELECT_SIGNATURE_WITH_ADDITIONAL_MODELS = /select:\\(\\{data:([A-Za-z_$][\\w$]*)\\}\\)=>([A-Za-z_$][\\w$]*)\\(\\{additionalAvailableModels:new Set\\(([A-Za-z_$][\\w$]*)\\),authMethod:([A-Za-z_$][\\w$]*),availableModels:([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)?),defaultModel:([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)?),enabledReasoningEfforts:([A-Za-z_$][\\w$]*),includeUltraReasoningEffort:([A-Za-z_$][\\w$]*),isCustomModelProvider:([A-Za-z_$][\\w$]*),models:\\1,useHiddenModels:([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)?)\\}\\)/;
+const CURRENT_MODEL_LIST_GENERIC_SIGNATURE = /(select:\\(\\{data:([A-Za-z_$][\\w$]*)\\}\\)=>[A-Za-z_$][\\w$]*\\(\\{(?=[^{}]*\\bauthMethod:)(?=[^{}]*\\bavailableModels:)(?=[^{}]*\\bdefaultModel:)(?=[^{}]*\\bincludeUltraReasoningEffort:)[^{}]*\\bmodels:)([\\s\\S]*?)(,useHiddenModels:[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)?\\}\\))/g;
+
+function codexfastPatchGenericModelList(match, prefix, modelsVar, modelsExpression, suffix) {
+    if (modelsExpression !== modelsVar) return match;
+    const literal = CODEXFAST_MODEL_OVERRIDE_TARGET_LITERAL;
+    let fields = prefix
+        .replace(/additionalAvailableModels:new Set\\(([A-Za-z_$][\\w$]*)\\)/, (_match, variable) => "additionalAvailableModels:new Set([..." + variable + "," + literal + "])")
+        .replace(/\\bavailableModels:(new Set\\(([A-Za-z_$][\\w$]*)\\)|([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)?))(?=,)/, (_match, _expression, setVariable, variable) => "availableModels:new Set([..." + (setVariable || variable) + "," + literal + "])")
+        .replace(/\\bdefaultModel:([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)?)(?=,)/, (_match, variable) => "defaultModel:" + variable + "===" + CODEXFAST_MODEL_OVERRIDE_SOURCE_LITERAL + "?" + literal + ":" + variable);
+    return fields + "/*codexfast-model-override-list*/" + codexfastCurrentModelListExpression(modelsVar) + suffix;
+}
 function codexfastCurrentModelListExpression(modelsVar) {
     return \`(()=>{let m=\${modelsVar};if(!Array.isArray(m))return m;let s=\${CODEXFAST_MODEL_OVERRIDE_SOURCE_LITERAL},t=\${CODEXFAST_MODEL_OVERRIDE_TARGET_LITERAL},d=\${CODEXFAST_MODEL_OVERRIDE_DISPLAY_LITERAL},h=m.some(e=>e?.model===t),o=[];for(let e of m){if(h&&e?.model===s)continue;let n=e?.model===s||e?.model===t?{...e,id:t,model:t,displayName:e.displayName&&e.model===t?e.displayName:d,hidden:!1,additionalSpeedTiers:Array.isArray(e.additionalSpeedTiers)?e.additionalSpeedTiers.includes(\\\`fast\\\`)?e.additionalSpeedTiers:[...e.additionalSpeedTiers,\\\`fast\\\`]:[\\\`fast\\\`],serviceTiers:Array.isArray(e.serviceTiers)&&e.serviceTiers.length>0?e.serviceTiers:[\${GPT_55_FAST_SERVICE_TIER}],defaultServiceTier:e.defaultServiceTier??null}:e;if(n?.model===t&&o.some(e=>e?.model===t))continue;o.push(n)}return o.some(e=>e?.model===t)?o:[...o,\${GPT_55_MODEL_ENTRY}]})()\`;
 }
@@ -262,6 +273,7 @@ function codexfastApplyCurrentModelRuntimePatchesToBody(_resourcePath, body) {
         if (content.includes(CODEXFAST_MODEL_OVERRIDE_SOURCE_ID)) {
             recordReplacement(\`\${CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME} model id literals\`, codexfastReplaceModelIdLiterals(content));
         }
+        recordReplacement(\`\${CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME} model list current\`, content.replace(CURRENT_MODEL_LIST_GENERIC_SIGNATURE, codexfastPatchGenericModelList));
         recordReplacement(\`\${CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME} model list current\`, content.replace(CURRENT_MODEL_LIST_SELECT_SIGNATURE_WITH_ADDITIONAL_MODELS, codexfastPatchCurrentModelListWithAdditionalModels));
         recordReplacement(\`\${CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME} model list current\`, content.replace(CURRENT_MODEL_LIST_SELECT_SIGNATURE, codexfastPatchCurrentModelList));
     }
@@ -348,16 +360,20 @@ applyRuntimePatchesToBody = function(resourcePath, body) {
 `;
 }
 
-function addUltrafastRuntimePatch(source, version) {
-  if (process.env.CODEXFAST_ULTRAFAST === "0") return source;
+function supportsNativeUltrafast(version) {
   // Earlier clients do not have the native Ultrafast label, icon and request schema.
   const minimum = [26, 1002, 52244];
   const actual = version.split(".").map(Number);
-  if (actual.length !== 3 || actual.some((part) => !Number.isFinite(part))) return source;
+  if (actual.length !== 3 || actual.some((part) => !Number.isFinite(part))) return false;
   for (let index = 0; index < minimum.length; index += 1) {
-    if (actual[index] < minimum[index]) return source;
+    if (actual[index] < minimum[index]) return false;
     if (actual[index] > minimum[index]) break;
   }
+  return true;
+}
+
+function addUltrafastRuntimePatch(source, version) {
+  if (process.env.CODEXFAST_ULTRAFAST === "0" || !supportsNativeUltrafast(version)) return source;
   if (source.includes("codexfast-ultrafast-extension")) return source;
   return replacePatcherSource(source, (patcherSource) => `${patcherSource}${ultrafastRuntimePatchSource()}`);
 }
@@ -366,7 +382,8 @@ function preserveRuntimePatchExtensionsAfterTargetFiltering(source) {
   const hasServiceTierExtension = source.includes("codexfast-service-tier-request-personal-access-token-extension");
   const hasCurrentModelExtension = source.includes("codexfast-model-override-current-extension");
   const hasUltrafastExtension = source.includes("codexfast-ultrafast-extension");
-  if (!hasServiceTierExtension && !hasCurrentModelExtension && !hasUltrafastExtension) return source;
+  const hasAccessExtension = source.includes("codexfast-service-tier-access-extension");
+  if (!hasServiceTierExtension && !hasCurrentModelExtension && !hasUltrafastExtension && !hasAccessExtension) return source;
   const before = [
     "  return { content, matchedLabels, patchedLabels, alreadyPatchedLabels };",
     "};`;",
@@ -385,6 +402,9 @@ function preserveRuntimePatchExtensionsAfterTargetFiltering(source) {
     "  let codexfastExtendedResult = codexfastFilteredResult;",
     '  if (typeof codexfastApplyServiceTierRequestPatPatch === "function" && !codexfastExtendedResult.matchedLabels.includes("Speed service tier request allowance")) {',
     "    codexfastExtendedResult = codexfastMergeFilteredResult(codexfastExtendedResult, codexfastApplyServiceTierRequestPatPatch(_resourcePath, codexfastExtendedResult.content));",
+    "  }",
+    '  if (typeof codexfastApplyServiceTierAccessRuntimePatchesToBody === "function") {',
+    "    codexfastExtendedResult = codexfastMergeFilteredResult(codexfastExtendedResult, codexfastApplyServiceTierAccessRuntimePatchesToBody(_resourcePath, codexfastExtendedResult.content));",
     "  }",
     '  if (typeof codexfastApplyCurrentModelRuntimePatchesToBody === "function") {',
     "    codexfastExtendedResult = codexfastMergeFilteredResult(codexfastExtendedResult, codexfastApplyCurrentModelRuntimePatchesToBody(_resourcePath, codexfastExtendedResult.content));",
@@ -497,6 +517,371 @@ function addServiceTierRequestAllowanceRuntimePatch(source) {
   return replacePatcherSource(source, (patcherSource) => `${patcherSource}${serviceTierRequestAllowanceRuntimePatchSource()}`);
 }
 
+function serviceTierAccessRuntimePatchSource() {
+  return String.raw`
+// codexfast-service-tier-access-extension
+const CODEXFAST_ACCESS_REQUEST_LABEL = "Speed service tier request allowance";
+const CODEXFAST_ACCESS_UI_LABEL = "Speed service tier access";
+const CODEXFAST_ACCESS_REQUEST_SIGNATURE = /(async function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{let ([A-Za-z_$][\w$]*)=await [A-Za-z_$][\w$]*\(\2,\3\);if\(\4!==\x60chatgpt\x60&&\4!==\x60personalAccessToken\x60\)return)(null|\{fast:!0,ultrafast:!0\})(;let ([A-Za-z_$][\w$]*)=await [A-Za-z_$][\w$]*\(\2,\3,\{priority:\x60critical\x60\}\);return \2\.query\.setData\([A-Za-z_$][\w$]*,\{authMethod:\4,hostId:\3\},\7\),[A-Za-z_$][\w$]*\(\7\)\})/g;
+// Match the React cache writes as well as the access expression, to avoid
+// changing similar ternaries belonging to unrelated features in the bundle.
+const CODEXFAST_ACCESS_UI_SIGNATURE = /(([A-Za-z_$][\w$]*)=)([A-Za-z_$][\w$]*)&&!([A-Za-z_$][\w$]*)&&([A-Za-z_$][\w$]*)!=null\?([A-Za-z_$][\w$]*)\(\5\):null(,([A-Za-z_$][\w$]*)\[\d+\]=\5,\8\[\d+\]=\4,\8\[\d+\]=\3,\8\[\d+\]=\2)/g;
+function codexfastApplyServiceTierAccessRuntimePatchesToBody(_resourcePath, body) {
+    const matchedLabels = [], patchedLabels = [], alreadyPatchedLabels = [];
+    let content = body.replace(CODEXFAST_ACCESS_REQUEST_SIGNATURE, (match, prefix, _store, _host, _auth, value, suffix) => {
+        matchedLabels.push(CODEXFAST_ACCESS_REQUEST_LABEL);
+        if (value !== "null") { alreadyPatchedLabels.push(CODEXFAST_ACCESS_REQUEST_LABEL); return match; }
+        patchedLabels.push(CODEXFAST_ACCESS_REQUEST_LABEL);
+        return prefix + "{fast:!0,ultrafast:!0}" + suffix;
+    });
+    if (content.includes("serviceTierAccess:")) {
+        content = content.replace(CODEXFAST_ACCESS_UI_SIGNATURE, (_match, prefix, _result, authAllowed, loading, data, accessFn, cacheWrites) => {
+            matchedLabels.push(CODEXFAST_ACCESS_UI_LABEL);
+            patchedLabels.push(CODEXFAST_ACCESS_UI_LABEL);
+            return prefix + "/*codexfast-service-tier-access*/!" + loading + "?(" + authAllowed + "?" + data + "!=null?" + accessFn + "(" + data + "):null:{fast:!0,ultrafast:!0}):null" + cacheWrites;
+        });
+        if (!matchedLabels.includes(CODEXFAST_ACCESS_UI_LABEL) && content.includes("/*codexfast-service-tier-access*/")) {
+            matchedLabels.push(CODEXFAST_ACCESS_UI_LABEL);
+            alreadyPatchedLabels.push(CODEXFAST_ACCESS_UI_LABEL);
+        }
+    }
+    return { content, matchedLabels, patchedLabels, alreadyPatchedLabels };
+}
+const codexfastPreviousApplyRuntimePatchesToBodyForAccess = applyRuntimePatchesToBody;
+applyRuntimePatchesToBody = function(resourcePath, body) {
+    const baseResult = codexfastPreviousApplyRuntimePatchesToBodyForAccess(resourcePath, body);
+    const extensionResult = codexfastApplyServiceTierAccessRuntimePatchesToBody(resourcePath, baseResult.content);
+    return {
+        content: extensionResult.content,
+        matchedLabels: [...baseResult.matchedLabels, ...extensionResult.matchedLabels],
+        patchedLabels: [...baseResult.patchedLabels, ...extensionResult.patchedLabels],
+        alreadyPatchedLabels: [...baseResult.alreadyPatchedLabels, ...extensionResult.alreadyPatchedLabels],
+    };
+};
+`;
+}
+
+function addServiceTierAccessRuntimePatch(source) {
+  if (source.includes("codexfast-service-tier-access-extension")) return source;
+  return replacePatcherSource(source, (patcherSource) => `${patcherSource}${serviceTierAccessRuntimePatchSource()}`);
+}
+
+function addNativeUltrafastEnvironment(source, native) {
+  if (!native) return source;
+  const before = "env: childEnvWithAutomaticUpdateSetting(),";
+  const appEnvironment = { CODEX_CLI_PATH: native.wrapperPath, CODEX_APP_SERVER_FORCE_CLI: "1" };
+  const after = `env: childEnvWithAutomaticUpdateSetting({ ...process.env, ...${JSON.stringify(appEnvironment)} }),`;
+  if (!source.includes(before)) throw new Error("Could not attach the native Ultrafast catalog to the App launch environment.");
+  return source.replace(before, after);
+}
+
+// Native catalog preparation stays in this single-file launcher.
+const scanChunkBytes = 1024 * 1024;
+const maxCatalogBytes = 64 * 1024 * 1024;
+const catalogPrefixes = [
+  Buffer.from('{\n  "models": ['),
+  Buffer.from('{\r\n  "models": ['),
+  Buffer.from('{"models":['),
+];
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateNativeCatalog(catalog) {
+  if (!isRecord(catalog) || !Array.isArray(catalog.models) || catalog.models.length === 0) {
+    throw new Error("Native model catalog must be an object containing a nonempty models array.");
+  }
+  const slugs = new Set();
+  for (const [index, model] of catalog.models.entries()) {
+    // These are native ModelInfo fields, not the shortened app-server/UI model list.
+    if (!isRecord(model)
+      || typeof model.slug !== "string" || model.slug.length === 0
+      || typeof model.display_name !== "string"
+      || !Array.isArray(model.supported_reasoning_levels)
+      || typeof model.shell_type !== "string"
+      || typeof model.visibility !== "string"
+      || typeof model.supported_in_api !== "boolean"
+      || !Number.isInteger(model.priority)
+      || typeof model.support_verbosity !== "boolean"
+      || !isRecord(model.truncation_policy)
+      || !Array.isArray(model.experimental_supported_tools)) {
+      throw new Error(`Native model catalog entry ${index + 1} is missing required ModelInfo metadata.`);
+    }
+    if (slugs.has(model.slug)) {
+      throw new Error(`Native model catalog entry ${index + 1} has a duplicate slug.`);
+    }
+    slugs.add(model.slug);
+    if (model.service_tiers !== undefined
+      && (!Array.isArray(model.service_tiers)
+        || model.service_tiers.some((tier) => !isRecord(tier)
+          || typeof tier.id !== "string"
+          || typeof tier.name !== "string"
+          || typeof tier.description !== "string"))) {
+      throw new Error(`Native model catalog entry ${index + 1} has invalid service_tiers metadata.`);
+    }
+  }
+  return catalog;
+}
+
+function parseNativeCatalog(source) {
+  let parsed;
+  try {
+    parsed = JSON.parse(source);
+  } catch {
+    throw new Error("Native model catalog is not valid JSON.");
+  }
+  return validateNativeCatalog(parsed);
+}
+
+function readExplicitCatalog(catalogPath) {
+  const info = fs.statSync(catalogPath);
+  if (!info.isFile()) throw new Error("CODEXFAST_MODEL_CATALOG_JSON must identify a regular JSON file.");
+  if (info.size > maxCatalogBytes) throw new Error("Native model catalog exceeds the 64 MiB size limit.");
+  return parseNativeCatalog(fs.readFileSync(catalogPath, "utf8"));
+}
+
+function readJsonObjectAt(fd, startOffset, fileSize) {
+  const parts = [];
+  const stack = [];
+  const buffer = Buffer.allocUnsafe(scanChunkBytes);
+  let inString = false;
+  let escaped = false;
+  let size = 0;
+  let position = startOffset;
+  while (position < fileSize && size < maxCatalogBytes) {
+    const bytesRead = fs.readSync(fd, buffer, 0, Math.min(buffer.length, maxCatalogBytes - size), position);
+    if (bytesRead === 0) break;
+    for (let index = 0; index < bytesRead; index += 1) {
+      const byte = buffer[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (byte === 0x5c) escaped = true;
+        else if (byte === 0x22) inString = false;
+        else if (byte < 0x20) return null;
+        continue;
+      }
+      if (byte === 0x22) inString = true;
+      else if (byte === 0x7b || byte === 0x5b) stack.push(byte);
+      else if (byte === 0x7d || byte === 0x5d) {
+        const expected = byte === 0x7d ? 0x7b : 0x5b;
+        if (stack.pop() !== expected) return null;
+        if (stack.length === 0) {
+          parts.push(Buffer.from(buffer.subarray(0, index + 1)));
+          return Buffer.concat(parts).toString("utf8");
+        }
+      } else if (byte === 0) return null;
+    }
+    parts.push(Buffer.from(buffer.subarray(0, bytesRead)));
+    position += bytesRead;
+    size += bytesRead;
+  }
+  return null;
+}
+
+function readBundledCatalog(cliPath) {
+  const fd = fs.openSync(cliPath, "r");
+  try {
+    const fileSize = fs.fstatSync(fd).size;
+    const buffer = Buffer.allocUnsafe(scanChunkBytes);
+    const overlapBytes = Math.max(...catalogPrefixes.map((prefix) => prefix.length)) - 1;
+    let overlap = Buffer.alloc(0);
+    let position = 0;
+    while (position < fileSize) {
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, position);
+      if (bytesRead === 0) break;
+      const chunk = Buffer.concat([overlap, buffer.subarray(0, bytesRead)]);
+      const chunkOffset = position - overlap.length;
+      for (const prefix of catalogPrefixes) {
+        let fromIndex = 0;
+        while (fromIndex < chunk.length) {
+          const matchIndex = chunk.indexOf(prefix, fromIndex);
+          if (matchIndex === -1) break;
+          fromIndex = matchIndex + 1;
+          const source = readJsonObjectAt(fd, chunkOffset + matchIndex, fileSize);
+          if (source === null) continue;
+          try {
+            return parseNativeCatalog(source);
+          } catch {
+            // Binary strings may include unrelated examples; require full ModelInfo metadata.
+          }
+        }
+      }
+      overlap = Buffer.from(chunk.subarray(Math.max(0, chunk.length - overlapBytes)));
+      position += bytesRead;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  throw new Error("Cannot find a complete bundled native model catalog in the Codex CLI. "
+    + "Set CODEXFAST_MODEL_CATALOG_JSON to an existing full native {models:[ModelInfo]} catalog; "
+    + "a custom CLI wrapper or a different CLI build may not embed one.");
+}
+
+function executableFile(candidate) {
+  try {
+    if (fs.statSync(candidate).isDirectory()) candidate = path.join(candidate, "codex");
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return fs.statSync(candidate).isFile() ? fs.realpathSync(candidate) : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveCli(appBundle, env) {
+  if (env.CODEX_CLI_PATH) {
+    const requested = env.CODEX_CLI_PATH;
+    const candidates = requested.includes(path.sep)
+      ? [path.resolve(requested)]
+      : (env.PATH ?? "").split(path.delimiter).map((directory) => path.resolve(directory, requested));
+    const resolved = candidates.map(executableFile).find(Boolean);
+    if (!resolved) throw new Error("CODEX_CLI_PATH does not identify an executable CLI file.");
+    return resolved;
+  }
+  const resources = path.join(appBundle, "Contents", "Resources");
+  for (const candidate of [
+    path.join(resources, "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"),
+    path.join(resources, "app.asar.unpacked", "codex"),
+  ]) {
+    const resolved = executableFile(candidate);
+    if (resolved) return resolved;
+  }
+  throw new Error("Cannot find the bundled Codex CLI. Set CODEX_CLI_PATH to the native CLI executable.");
+}
+
+function hasConfiguredModelCatalog(configPath) {
+  if (!fs.existsSync(configPath)) return false;
+  // Inspect only the presence of a setting. Never return or print config contents or credentials.
+  const source = fs.readFileSync(configPath, "utf8");
+  let multilineQuote = null;
+  for (const line of source.split(/\r?\n/)) {
+    if (multilineQuote === null
+      && /^\s*(?:model_catalog_json|"model_catalog_json"|'model_catalog_json')\s*=/.test(line)) return true;
+    let quote = null;
+    for (let index = 0; index < line.length; index += 1) {
+      if (multilineQuote !== null) {
+        if (line.startsWith(multilineQuote, index)) {
+          multilineQuote = null;
+          index += 2;
+        } else if (multilineQuote === '"""' && line[index] === "\\") index += 1;
+        continue;
+      }
+      if (quote !== null) {
+        if (quote === '"' && line[index] === "\\") index += 1;
+        else if (line[index] === quote) quote = null;
+        continue;
+      }
+      if (line[index] === "#") break;
+      if (line.startsWith('"""', index) || line.startsWith("'''", index)) {
+        multilineQuote = line.slice(index, index + 3);
+        index += 2;
+      } else if (line[index] === '"' || line[index] === "'") quote = line[index];
+    }
+  }
+  return false;
+}
+
+function tierName(tier) {
+  return tier.name.trim().toLowerCase();
+}
+
+function addUltrafast(catalog) {
+  const patchedModels = [];
+  const models = catalog.models.map((model) => {
+    const tiers = model.service_tiers ?? [];
+    if (tiers.some((tier) => tier.id === "ultrafast")) return model;
+    const supportsFast = tiers.some((tier) => tier.id === "priority" || tier.id === "fast"
+      || tierName(tier) === "fast" || tierName(tier) === "priority");
+    if (!supportsFast) return model;
+    patchedModels.push(model.slug);
+    return {
+      ...model,
+      service_tiers: [...tiers, { id: "ultrafast", name: "Ultrafast", description: "" }],
+    };
+  });
+  return { catalog: { ...catalog, models }, patchedModels };
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function cliWrapperSource(cliPath, catalogPath) {
+  // JSON string escaping is valid TOML basic-string escaping for a filesystem path.
+  const configOverride = `model_catalog_json=${JSON.stringify(catalogPath)}`;
+  return `#!/bin/sh
+# codexfast-ultrafast-native: temporary app-server catalog override
+set -eu
+CODEX_CLI_PATH=${shellQuote(cliPath)}
+export CODEX_CLI_PATH
+codexfast_skip_value=0
+codexfast_app_server=0
+for codexfast_arg in "$@"; do
+  if [ "$codexfast_skip_value" -eq 1 ]; then
+    codexfast_skip_value=0
+    continue
+  fi
+  case "$codexfast_arg" in
+    -c|--config|-p|--profile|-C|--cd|-m|--model|-s|--sandbox|-a|--ask-for-approval|--enable|--disable|--local-provider|--add-dir)
+      codexfast_skip_value=1
+      ;;
+    --) ;;
+    -*) ;;
+    app-server)
+      codexfast_app_server=1
+      break
+      ;;
+    *) break ;;
+  esac
+done
+if [ "$codexfast_app_server" -eq 1 ]; then
+  exec "$CODEX_CLI_PATH" "$@" -c ${shellQuote(configOverride)}
+fi
+exec "$CODEX_CLI_PATH" "$@"
+`;
+}
+
+/**
+ * Prepare a private full native catalog and a temporary CLI wrapper.
+ * This only writes beneath tempRoot; it never edits the app, native CLI or user configuration.
+ */
+function prepareUltrafastNative({ appBundle, tempRoot, env = process.env }) {
+  const cliPath = resolveCli(appBundle, env);
+  const explicitCatalog = env.CODEXFAST_MODEL_CATALOG_JSON;
+  let sourceCatalog;
+  let catalogSource;
+  if (explicitCatalog) {
+    sourceCatalog = readExplicitCatalog(path.resolve(explicitCatalog));
+    catalogSource = "explicit-file";
+  } else {
+    const codexHome = env.CODEX_HOME || path.join(env.HOME || os.homedir(), ".codex");
+    if (hasConfiguredModelCatalog(path.join(codexHome, "config.toml"))) {
+      throw new Error("A model_catalog_json setting already exists in config.toml. "
+        + "Set CODEXFAST_MODEL_CATALOG_JSON to the full native catalog you want to preserve; "
+        + "the launcher will not replace a configured catalog with bundled model metadata.");
+    }
+    sourceCatalog = readBundledCatalog(cliPath);
+    catalogSource = "builtin-cli";
+  }
+  const { catalog, patchedModels } = addUltrafast(sourceCatalog);
+  const absoluteTempRoot = path.resolve(tempRoot);
+  fs.mkdirSync(absoluteTempRoot, { recursive: true, mode: 0o700 });
+  const privateDir = fs.mkdtempSync(path.join(absoluteTempRoot, "ultrafast-native-"));
+  fs.chmodSync(privateDir, 0o700);
+  const catalogPath = path.join(privateDir, "models.json");
+  const wrapperPath = path.join(privateDir, "codex-cli");
+  try {
+    fs.writeFileSync(catalogPath, `${JSON.stringify(catalog)}\n`, { mode: 0o600, flag: "wx" });
+    fs.chmodSync(catalogPath, 0o600);
+    fs.writeFileSync(wrapperPath, cliWrapperSource(cliPath, catalogPath), { mode: 0o700, flag: "wx" });
+    fs.chmodSync(wrapperPath, 0o700);
+  } catch (error) {
+    fs.rmSync(privateDir, { recursive: true, force: true });
+    throw error;
+  }
+  return { cliPath, wrapperPath, catalogPath, catalogSource, modelCount: catalog.models.length, patchedModels };
+}
+
 function findBundledCodexfastTarball() {
   const vendorDir = path.join(scriptDir, "vendor");
   if (!fs.existsSync(vendorDir)) return null;
@@ -551,10 +936,19 @@ function prepareLauncher({ isolatedProfile = null } = {}) {
   source = addModelOverride(source);
   source = disableAutomaticUpdateRuntimeTargets(source);
   source = addServiceTierRequestAllowanceRuntimePatch(source);
+  source = addServiceTierAccessRuntimePatch(source);
   source = addCurrentModelRuntimePatch(source);
   source = addUltrafastRuntimePatch(source, info.version);
   source = preserveRuntimePatchExtensionsAfterTargetFiltering(source);
   source = addUserDataDir(source, isolatedProfile);
+  const nativeUltrafast = process.env.CODEXFAST_ULTRAFAST !== "0" && supportsNativeUltrafast(info.version)
+    ? prepareUltrafastNative({
+      appBundle,
+      tempRoot,
+      env: isolatedProfile ? { ...process.env, CODEX_HOME: path.join(isolatedProfile, "codex-home") } : process.env,
+    })
+    : null;
+  source = addNativeUltrafastEnvironment(source, nativeUltrafast);
 
   fs.writeFileSync(preparedLauncher, source, "utf8");
   fs.chmodSync(preparedLauncher, 0o755);
@@ -565,6 +959,7 @@ function prepareLauncher({ isolatedProfile = null } = {}) {
     codexfastVersion: packageJson.version,
     preparedLauncher,
     tempRoot,
+    nativeUltrafast,
   };
 }
 
@@ -637,6 +1032,7 @@ async function isolatedTest() {
 
   console.log(`Prepared codexfast ${prepared.codexfastVersion} for ${prepared.versionKey}`);
   console.log(`Isolated profile: ${profile}`);
+  printNativeUltrafastStatus(prepared);
 
   const child = spawn(process.execPath, [prepared.preparedLauncher, "launch"], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -704,15 +1100,23 @@ async function isolatedTest() {
   }, 70_000);
 }
 
-async function launchNormal() {
+function printNativeUltrafastStatus(prepared) {
+  const native = prepared.nativeUltrafast;
+  if (!native) return;
+  console.log(`Native Ultrafast catalog: ${native.catalogSource}; ${native.patchedModels.length} model(s) extended.`);
+  console.log("Ultrafast uses service_tier=ultrafast; the model ID is preserved. Provider support is required.");
+}
+
+async function launchNormal(prepared = null, { selftested = false } = {}) {
   if (readCodexProcesses().main.length > 0) {
     console.error("Codex.app is already running. Quit Codex.app first, or run this launcher with `relaunch` from Terminal.");
     process.exitCode = 1;
     return;
   }
-  const prepared = prepareLauncher();
-  runSelftests(prepared.preparedLauncher);
+  prepared ??= prepareLauncher();
+  if (!selftested) runSelftests(prepared.preparedLauncher);
   console.log(`Prepared codexfast ${prepared.codexfastVersion} for ${prepared.versionKey}`);
+  printNativeUltrafastStatus(prepared);
   console.log("This launch does not modify Codex.app. Keep this terminal process running while using Codex.");
   const child = spawn(process.execPath, [prepared.preparedLauncher, "launch"], {
     stdio: "inherit",
@@ -734,6 +1138,10 @@ async function relaunch({ dryRun = false } = {}) {
     return;
   }
 
+  // Prepare the compatibility files before asking the user's running App to exit.
+  // A missing catalog or unsupported upstream layout must not leave the App closed.
+  const prepared = prepareLauncher();
+  runSelftests(prepared.preparedLauncher);
   if (readCodexProcesses().main.length > 0) {
     console.log("Requesting Codex.app to quit...");
     if (!requestCodexQuit()) {
@@ -750,7 +1158,7 @@ async function relaunch({ dryRun = false } = {}) {
     console.log("Only Codex support processes are still present; continuing with runtime patch launch.");
   }
 
-  await launchNormal();
+  await launchNormal(prepared, { selftested: true });
 }
 
 function selftestProcessClassification() {

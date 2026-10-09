@@ -29,6 +29,12 @@ function output(result) {
   return [result.stdout, result.stderr].filter(Boolean).join("\n");
 }
 
+function preparedDetails(result) {
+  const json = result.stdout.match(/(\{\n  "version":[\s\S]*\})\s*$/)?.[1];
+  assert.ok(json, output(result));
+  return JSON.parse(json);
+}
+
 const status = run(["status"]);
 assert.equal(status.status, 0, output(status));
 assert.match(output(status), /Version key: \d+\.\d+\.\d+\+\d+/);
@@ -50,8 +56,21 @@ assert.equal(prepared.status, 0, output(prepared));
 const preparedLauncher = output(prepared).match(/"preparedLauncher": "([^"]+)"/)?.[1];
 assert.ok(preparedLauncher, output(prepared));
 const preparedSource = fs.readFileSync(preparedLauncher, "utf8");
+const preparedMetadata = preparedDetails(prepared);
+assert.ok(preparedMetadata.nativeUltrafast, "a current client should prepare native Ultrafast metadata");
+assert.ok(preparedMetadata.nativeUltrafast.modelCount > 0);
+assert.ok(Array.isArray(preparedMetadata.nativeUltrafast.patchedModels));
+assert.ok(["builtin-cli", "explicit-file"].includes(preparedMetadata.nativeUltrafast.catalogSource));
+for (const key of ["cliPath", "wrapperPath", "catalogPath"]) {
+  assert.ok(path.isAbsolute(preparedMetadata.nativeUltrafast[key]), `${key} must be absolute`);
+}
+assert.ok(preparedSource.includes(JSON.stringify({
+  CODEX_CLI_PATH: preparedMetadata.nativeUltrafast.wrapperPath,
+  CODEX_APP_SERVER_FORCE_CLI: "1",
+})), "prepared App launch environment should select the native wrapper and CLI transport");
 assert.doesNotMatch(preparedSource, /codexfast-model-override-current-extension/);
 assert.match(preparedSource, /codexfast-service-tier-request-personal-access-token-extension/);
+assert.match(preparedSource, /codexfast-service-tier-access-extension/);
 assert.match(preparedSource, /codexfast-runtime-extension-filter-bridge/);
 assert.match(preparedSource, /codexfast-ultrafast-extension/);
 assert.match(
@@ -137,6 +156,101 @@ assert.match(
   /if\(n!==`chatgpt`&&n!==`personalAccessToken`\)return!0/,
 );
 assert.ok(filteredPersonalAccessTokenPatch.patchedLabels.includes("Speed service tier request allowance"));
+
+// Exact request function and React cache layout from client 26.1007.21159.
+const currentServiceTierRequestBody =
+  "async function bga(e,t){let n=await _ga(e,t);if(n!==`chatgpt`&&n!==`personalAccessToken`)return null;let r=await KPe(e,t,{priority:`critical`});return e.query.setData(Hd,{authMethod:n,hostId:t},r),oee(r)}";
+const currentServiceTierUiBody =
+  "function KVi(e){let t=(0,qVi.c)(10),n=G(Li),r=e?.hostId??n,i=BYe(r),a=i?.authMethod===`chatgpt`||i?.authMethod===`personalAccessToken`,o=i?.authMethod??null,s;t[0]!==r||t[1]!==o?(s={authMethod:o,hostId:r},t[0]=r,t[1]=o,t[2]=s):s=t[2];let{data:c,isPending:l}=Zs(Hd,s),u=!!i?.isLoading||a&&l,d;t[3]!==c||t[4]!==u||t[5]!==a?(d=a&&!u&&c!=null?oee(c):null,t[3]=c,t[4]=u,t[5]=a,t[6]=d):d=t[6];let f=d,p;return t[7]!==u||t[8]!==f?(p={serviceTierAccess:f,isLoading:u},t[7]=u,t[8]=f,t[9]=p):p=t[9],p}";
+const serviceTierRequestLabel = "Speed service tier request allowance";
+const serviceTierAccessLabel = "Speed service tier access";
+
+async function assertCurrentServiceTierAccessBehavior(applyPatches) {
+  const requestPatch = applyPatches("app://-/assets/app-initial.js", currentServiceTierRequestBody);
+  assert.notEqual(requestPatch.content, currentServiceTierRequestBody);
+  assert.ok(requestPatch.patchedLabels.includes(serviceTierRequestLabel));
+  for (const authMethod of ["apiKey", "chatgpt", "personalAccessToken"]) {
+    for (const access of [{ fast: true, ultrafast: false }, { fast: false, ultrafast: false }]) {
+      const response = Object.freeze({ access: Object.freeze(access) });
+      const calls = [];
+      const queryKey = {};
+      const store = { query: { setData: (...args) => calls.push(["cache", ...args]) } };
+      const request = new Function("_ga", "KPe", "Hd", "oee", `${requestPatch.content};return bga;`)(
+        async () => authMethod,
+        async (...args) => { calls.push(["fetch", ...args]); return response; },
+        queryKey,
+        (data) => { calls.push(["access", data]); return data.access; },
+      );
+      const actual = await request(store, "local");
+      if (authMethod === "apiKey") {
+        assert.deepEqual(actual, { fast: true, ultrafast: true });
+        assert.deepEqual(calls, [], "API key access should not fetch ChatGPT requirements");
+      } else {
+        assert.strictEqual(actual, response.access, "account speed permissions must remain authoritative");
+        assert.deepEqual(calls, [
+          ["fetch", store, "local", { priority: "critical" }],
+          ["cache", queryKey, { authMethod, hostId: "local" }, response],
+          ["access", response],
+        ]);
+      }
+    }
+  }
+  const repeatedRequest = applyPatches("app://-/assets/app-initial.js", requestPatch.content);
+  assert.equal(repeatedRequest.content, requestPatch.content);
+  assert.ok(repeatedRequest.alreadyPatchedLabels.includes(serviceTierRequestLabel));
+  assert.ok(!repeatedRequest.patchedLabels.includes(serviceTierRequestLabel));
+
+  const uiPatch = applyPatches("app://-/assets/app-initial.js", currentServiceTierUiBody);
+  assert.notEqual(uiPatch.content, currentServiceTierUiBody);
+  assert.ok(uiPatch.patchedLabels.includes(serviceTierAccessLabel));
+  assert.match(uiPatch.content, /t\[3\]=c,t\[4\]=u,t\[5\]=a,t\[6\]=d/);
+  for (const authMethod of ["apiKey", "chatgpt", "personalAccessToken"]) {
+    const cache = Array(10).fill(Symbol("uncached"));
+    const access = Object.freeze({ fast: false, ultrafast: false });
+    let state = { isLoading: false, isPending: false, data: { access } };
+    const queryKey = {};
+    const ui = new Function("qVi", "G", "Li", "BYe", "Zs", "Hd", "oee", `${uiPatch.content};return KVi;`)(
+      { c: () => cache },
+      () => "local",
+      {},
+      () => ({ authMethod, isLoading: state.isLoading }),
+      (key, params) => {
+        assert.strictEqual(key, queryKey);
+        assert.deepEqual(params, { authMethod, hostId: "local" });
+        return { data: state.data, isPending: state.isPending };
+      },
+      queryKey,
+      (data) => data.access,
+    );
+    const result = ui({ hostId: "local" });
+    if (authMethod === "apiKey") assert.deepEqual(result.serviceTierAccess, { fast: true, ultrafast: true });
+    else assert.strictEqual(result.serviceTierAccess, access);
+    assert.strictEqual(ui({ hostId: "local" }), result, "cached UI access should preserve its result identity");
+    state = { ...state, isLoading: true };
+    assert.deepEqual(ui(), { serviceTierAccess: null, isLoading: true });
+    state = { ...state, isLoading: false, isPending: true };
+    if (authMethod === "apiKey") {
+      assert.deepEqual(ui(), { serviceTierAccess: { fast: true, ultrafast: true }, isLoading: false });
+    } else {
+      assert.deepEqual(ui(), { serviceTierAccess: null, isLoading: true });
+      state = { ...state, isPending: false, data: null };
+      assert.deepEqual(ui(), { serviceTierAccess: null, isLoading: false });
+    }
+  }
+  const repeatedUi = applyPatches("app://-/assets/app-initial.js", uiPatch.content);
+  assert.equal(repeatedUi.content, uiPatch.content);
+  assert.ok(repeatedUi.alreadyPatchedLabels.includes(serviceTierAccessLabel));
+  assert.ok(!repeatedUi.patchedLabels.includes(serviceTierAccessLabel));
+  for (const unrelated of [
+    "function unrelated(a,u,c){let d=a&&!u&&c!=null?oee(c):null;return {serviceTierAccess:d}}",
+    currentServiceTierUiBody.replace("serviceTierAccess:f", "otherFeatureAccess:f"),
+  ]) {
+    assert.equal(applyPatches("app://-/assets/unrelated.js", unrelated).content, unrelated);
+  }
+}
+
+await assertCurrentServiceTierAccessBehavior(applyDefaultRuntimePatchesToBody);
+await assertCurrentServiceTierAccessBehavior(applyFilteredRuntimePatchesToBody);
 
 const ultrafastLabel = "Ultrafast model service tiers";
 const currentUltrafastModelListBody =
@@ -226,6 +340,7 @@ assertUltrafastModelBehavior(applyFilteredRuntimePatchesToBody);
 
 const ultrafastDisabledPrepared = run(["prepare"], { CODEXFAST_ULTRAFAST: "0" });
 assert.equal(ultrafastDisabledPrepared.status, 0, output(ultrafastDisabledPrepared));
+assert.equal(preparedDetails(ultrafastDisabledPrepared).nativeUltrafast, null);
 const ultrafastDisabledPreparedLauncher = output(ultrafastDisabledPrepared).match(/"preparedLauncher": "([^"]+)"/)?.[1];
 assert.ok(ultrafastDisabledPreparedLauncher, output(ultrafastDisabledPrepared));
 const ultrafastDisabledSource = fs.readFileSync(ultrafastDisabledPreparedLauncher, "utf8");
@@ -249,6 +364,7 @@ try {
   );
   const oldAppPrepared = run(["prepare"], { CODEXFAST_APP_BUNDLE: oldAppBundle });
   assert.equal(oldAppPrepared.status, 0, output(oldAppPrepared));
+  assert.equal(preparedDetails(oldAppPrepared).nativeUltrafast, null);
   const oldAppPreparedLauncher = output(oldAppPrepared).match(/"preparedLauncher": "([^"]+)"/)?.[1];
   assert.ok(oldAppPreparedLauncher, output(oldAppPrepared));
   assert.doesNotMatch(fs.readFileSync(oldAppPreparedLauncher, "utf8"), /codexfast-ultrafast-extension/);
@@ -316,5 +432,57 @@ for (const overridePatch of [modelListPatchWithAdditionalModels, filteredModelOv
 }
 assert.equal(modelOverrideCatalog[0].model, "gpt-5.5");
 assert.equal(modelOverrideCatalog[0].serviceTiers.length, 1);
+
+// Exercise the single-file native catalog helpers without executing its launcher main().
+const launcherSource = fs.readFileSync(launcher, "utf8");
+const nativeHelperSources = ["tierName", "addUltrafast", "shellQuote", "cliWrapperSource"].map((name) => {
+  const source = launcherSource.match(new RegExp(`function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0];
+  assert.ok(source, `launcher should contain its native ${name} helper`);
+  return source;
+});
+const nativeHelpers = new Function(
+  `${nativeHelperSources.join("\n")}\nreturn { addUltrafast, shellQuote, cliWrapperSource };`,
+)();
+const nativeFast = Object.freeze({ id: "priority", name: "Fast", description: "Original fast tier", extra: "keep" });
+const nativeUltra = Object.freeze({ id: "ultrafast", name: "Existing Ultrafast", description: "Keep" });
+const nativeModel = Object.freeze({
+  slug: "fixture-fast-model",
+  display_name: "Fixture fast model",
+  description: "Synthetic native ModelInfo for an isolated catalog test",
+  supported_reasoning_levels: Object.freeze([{ effort: "low", description: "Low" }]),
+  shell_type: "shell_command",
+  visibility: "list",
+  supported_in_api: true,
+  priority: 1,
+  support_verbosity: true,
+  truncation_policy: Object.freeze({ mode: "tokens", limit: 10_000 }),
+  experimental_supported_tools: Object.freeze(["fixture-tool"]),
+  context_window: 100_000,
+  model_messages: Object.freeze({ instructions_template: "Fixture metadata must be preserved." }),
+  service_tiers: Object.freeze([nativeFast]),
+});
+const standardOnlyNative = Object.freeze({ ...nativeModel, slug: "fixture-standard", service_tiers: Object.freeze([]) });
+const existingUltraNative = Object.freeze({ ...nativeModel, slug: "fixture-ultra", service_tiers: Object.freeze([nativeFast, nativeUltra]) });
+const nativeCatalog = Object.freeze({ models: Object.freeze([nativeModel, standardOnlyNative, existingUltraNative]), extra_metadata: "keep" });
+const extendedNative = nativeHelpers.addUltrafast(nativeCatalog);
+assert.deepEqual(extendedNative.patchedModels, [nativeModel.slug]);
+assert.equal(extendedNative.catalog.extra_metadata, nativeCatalog.extra_metadata);
+assert.strictEqual(extendedNative.catalog.models[1], standardOnlyNative);
+assert.strictEqual(extendedNative.catalog.models[2], existingUltraNative);
+assert.strictEqual(extendedNative.catalog.models[0].service_tiers[0], nativeFast);
+assert.deepEqual(extendedNative.catalog.models[0].service_tiers[1], { id: "ultrafast", name: "Ultrafast", description: "" });
+assert.equal(nativeModel.service_tiers.length, 1, "native source metadata must remain unchanged");
+for (const key of Object.keys(nativeModel).filter((key) => key !== "service_tiers")) {
+  assert.strictEqual(extendedNative.catalog.models[0][key], nativeModel[key], `native metadata ${key} must be preserved`);
+}
+assert.deepEqual(nativeHelpers.addUltrafast(extendedNative.catalog).patchedModels, []);
+assert.equal(nativeHelpers.shellQuote("a'b"), "'a'\\''b'");
+assert.equal(nativeHelpers.shellQuote("$VAR `cmd` \\\""), "'$VAR `cmd` \\\"'");
+const quotedCliPath = "/tmp/codex's CLI";
+const quotedCatalogPath = "/tmp/catalog's $VAR `tick` \\\".json";
+const nativeWrapper = nativeHelpers.cliWrapperSource(quotedCliPath, quotedCatalogPath);
+assert.ok(nativeWrapper.includes("CODEX_CLI_PATH='/tmp/codex'\\''s CLI'\nexport CODEX_CLI_PATH"));
+assert.ok(nativeWrapper.includes(`exec "$CODEX_CLI_PATH" "$@" -c ${nativeHelpers.shellQuote(`model_catalog_json=${JSON.stringify(quotedCatalogPath)}`)}`));
+assert.ok(nativeWrapper.endsWith('exec "$CODEX_CLI_PATH" "$@"\n'));
 
 console.log("codexfast-launcher tests passed");

@@ -2,14 +2,15 @@
 
 一个适用于 macOS Codex/ChatGPT Desktop 的本地运行时启动器。它会临时准备并启动 `codexfast` 会话，不修改已安装的 App 本体。
 
-这个项目主要面向通过中转站、自定义 Provider 或 API Key 使用 Codex 的用户。这类登录方式即使后端支持 Fast，也可能看不到官方 Fast 入口。启动器默认保留上游返回的模型列表，不新增、替换或伪造模型；使用官方 ChatGPT 账号登录且界面功能正常的用户，一般不需要使用本项目。
+这个项目主要面向通过中转站、自定义 Provider 或 API Key 使用 Codex 的用户。这类登录方式即使后端支持加速，也可能看不到对应入口。单个 `codexfast-launcher.mjs` 会检测客户端版本，准备临时兼容补丁和原生模型目录，不修改已安装 App 或正式配置。使用官方 ChatGPT 账号登录且界面功能正常的用户，一般不需要使用本项目。
 
 ## 当前兼容情况
 
-以下是截至 2026-10-09 的验证结果；当前已安装 ChatGPT Desktop 版本为 `26.1002.52244`（构建号 `13536`）：
+以下记录更新于 2026-10-09；当前已安装 ChatGPT Desktop 版本为 `26.1007.21159`（构建号 `20052`）。本次代码已按新版资源调整，客户端及真实请求效果待使用者验证。
 
 | 客户端版本 | 客户端表现 | 本项目的作用 |
 | --- | --- | --- |
+| `26.1007.21159+20052` | 速度权限改为分别控制 Fast / Ultrafast 的对象，旧布尔值补丁失效；App Server 会过滤模型目录未声明的档位 | 增加新版权限结构适配，保留官方账号返回的真实权限；同时为原生 App Server 准备包含 Ultrafast 的临时目录，修正“菜单有超快但请求丢档位”的配置缺口。仅完成代码适配，实际效果待验证 |
 | `26.1002.52244+13536` | 客户端原生包含 Ultrafast 的菜单、图标和请求档位；Fast 提示为 1.5 倍速度 | 使用 `codexfast 0.79.0` 加本项目扩展，默认为已有 Fast 档位的模型补充 Ultrafast，保留模型 ID 和原有档位；准备自测通过，Ultrafast 选项已由使用者确认显示正常。服务端请求及实际速度尚未验证 |
 | `26.707.31428+5059` | 上一版本可能不显示 GPT-5.6，Fast 入口也不可见 | 补充 GPT-5.6 模型菜单和 Fast 相关入口 |
 | `26.707.41301+5103` | 官方已恢复模型显示，但 Fast 入口仍不可见 | 主要补充 Fast 相关入口，并保留模型菜单兼容处理 |
@@ -94,9 +95,13 @@ node bin/codexfast-launcher.mjs status
 
 新版 App 可能在 `Runtime launch completed.` 之后才加载主界面资源，因此最初的 `Patched targets:` 可能为空。维护检查可用 `CODEXFAST_DEBUG_RUNTIME=1 node bin/codexfast-launcher.mjs isolated-test` 观察延迟资源的实际命中结果；日常启动不需要开启调试输出。
 
-随后可在 App 的模型菜单中打开速度（Speed）选项。`26.1002.52244` 及之后的客户端，启动器默认为已有 Fast 档位的模型补充 **Ultrafast**，沿用客户端原生文案和图标，不修改模型 ID、不增加模型，也不替换已有档位。已经包含 Ultrafast 的模型不会重复添加；没有 Fast 的模型保持原样。
+随后可在 App 的模型菜单中打开速度（Speed）选项。`26.1002.52244` 及之后的客户端，启动器默认为已有 Fast 档位的模型补充 **Ultrafast**，沿用客户端原生文案和图标，不修改模型 ID，也不替换已有档位。已经包含 Ultrafast 的模型不会重复添加；没有 Fast 的模型保持原样。`26.1007.21159` 的 API Key / 自定义 Provider 路径使用新版 `{fast, ultrafast}` 权限结构；官方登录仍保留服务端返回的权限。
 
-默认运行时的 `Patched targets:` 不应出现 `GPT-... model` 条目；新增扩展命中时会出现 `Ultrafast model service tiers`。Ultrafast 是独立的速度档位，选择后请求使用 `serviceTier: "ultrafast"`，没有承诺固定的倍速。
+默认运行时的 `Patched targets:` 不应出现 `GPT-... model` 条目；新版扩展命中时会出现 `Speed service tier access`、`Speed service tier request allowance` 等记录。启动时还会输出 `Native Ultrafast catalog:`，表示本次启动已准备原生档位目录。
+
+Ultrafast 是独立的速度档位：客户端传 `serviceTier: "ultrafast"`，原生 App Server 使用目录中的同名档位构造请求 `service_tier: "ultrafast"`。模型名仍为原模型，启动器不拼接 `-fast` 或 `-ultrafast` 后缀。中转站日志中的模型后缀取决于中转站自己的映射，单看模型名无法确认请求档位。
+
+开启 Ultrafast 时，本次本地会话使用 CLI 内置模型目录的临时快照，不实时刷新远端模型目录。目录保留完整模型元数据，只补充 Ultrafast；如果已有自定义 `model_catalog_json`，可通过 `CODEXFAST_MODEL_CATALOG_JSON` 指定同一份完整原生目录。启动器会先准备配置，再退出正在运行的 App。
 
 `Runtime launch completed.` 和隔离测试通过只证明客户端运行时补丁可加载；Fast 或 Ultrafast 是否真正生效，取决于账号或中转站服务端是否接受该档位。若选择 Ultrafast 后请求失败，请切回 Fast 或 Standard。
 
@@ -123,6 +128,14 @@ CODEXFAST_ULTRAFAST=0 node bin/codexfast-launcher.mjs relaunch
 ```
 
 较旧客户端不加载 Ultrafast 扩展。默认模型列表不做 ID 或名称覆盖，仅补充符合条件的速度档位。
+
+保留已有自定义原生模型目录：
+
+```zsh
+CODEXFAST_MODEL_CATALOG_JSON=/path/to/models.json node bin/codexfast-launcher.mjs relaunch
+```
+
+文件需要使用原生 `{ "models": [...] }` 格式和完整模型元数据，不能用界面返回的简化模型列表代替。普通启动无需设置此变量。显式设置的主机 CLI 命令和远程主机不受本地临时包装器控制。
 
 显式覆盖模型（默认关闭）：
 
