@@ -12,12 +12,12 @@
 
 项目主要处理通过中转站、自定义 Provider 或 API Key 使用 Codex 时，加速入口因认证路径或客户端判断而不可见的问题。默认不改写模型 ID 和名称；在 `26.1002.52244` 及之后的客户端，为所选原生目录中已有 Fast 的模型补充 Ultrafast，并保留其其他元数据。模型覆盖仅作为显式启用的兼容选项。官方 ChatGPT 登录路径应单独验证，不应把本项目描述为所有用户都必须使用的工具。
 
-当前适配记录：
+当前 `26.1007.21159+20052` 已由使用者完成客户端及实际请求验证，确认完全支持 Fast 和 Ultrafast。以下保留各版本的适配记录：
 
 | 客户端版本 | 验证结果 |
 | --- | --- |
-| `26.1007.21159+20052` | 依据真实客户端资源新增 `{fast, ultrafast}` 许可对象兼容：非 ChatGPT/PAT 路径补充对象；官方路径保留真实 requirements。新增单文件原生 CLI 目录准备逻辑，避免 `ModelInfo::service_tier_for_request` 过滤未声明档位。本轮未运行客户端或请求测试，效果待使用者验证 |
-| `26.1002.52244+13536` | `codexfast 0.79.0` 加本项目 Ultrafast 扩展；已确认原生菜单、图标、`ultrafast` 请求值，准备自测通过，Ultrafast 选项已由使用者确认显示正常。本轮未完成全量资源扫描；服务端请求和实际速度尚未验证 |
+| `26.1007.21159+20052` | 已完成 `{fast, ultrafast}` 许可对象与原生 CLI 档位目录适配，保留官方路径的真实 requirements，并修复原生请求过滤 Ultrafast 的问题。使用者已完成客户端、档位切换及实际请求验证，Fast / Ultrafast 均正常，确认完全支持 |
+| `26.1002.52244+13536` | `codexfast 0.79.0` 加本项目 Ultrafast 扩展；已确认原生菜单、图标、`ultrafast` 请求值，准备自测通过，Ultrafast 选项已由使用者确认显示正常；后续原生请求档位适配见 `26.1007.21159+20052` 记录 |
 | `26.707.31428+5059` | 可补充 GPT-5.6 模型菜单及 Fast 相关入口 |
 | `26.707.41301+5103` | 官方模型显示已恢复；关键 Fast、service tier 和模型兼容补丁目标仍能命中 |
 | `26.707.61608+5200` | 使用 `codexfast 0.50.0` 扫描真实 `app.asar` 中 4,951 个 JS 文件；Fast、Speed、`/fast`、service tier 和自动更新相关目标全部命中，缺失目标为 0 |
@@ -48,9 +48,9 @@
 | `26.820.60940+7119` | 使用 `codexfast 0.76.0` 对 Sparkle 待安装包实测；默认关闭模型覆盖且排除自动更新目标，`/fast`、service tier allowance、request allowance 和 conversation fallback 均命中；隔离运行时启动成功到达 ready，真实 App Server 环境中未发现 `main-process-hook.cjs` |
 | `26.825.31414+7287` | 使用 `codexfast 0.77.0` 对 Sparkle 待安装包实测；默认关闭模型覆盖且排除自动更新目标，`/fast`、service tier allowance、request allowance 和 conversation fallback 均命中；隔离运行时启动成功到达 ready，真实 App Server 环境中未发现 `main-process-hook.cjs` |
 | `26.825.32147+7303` | 使用 `codexfast 0.77.0` 对 Sparkle 待安装包实测；默认关闭模型覆盖且排除自动更新目标，`/fast`、service tier allowance、request allowance 和 conversation fallback 均命中；隔离运行时启动成功到达 ready，真实 App Server 环境中未发现 `main-process-hook.cjs` |
-| `26.908.70816+9275` | 使用 `codexfast 0.79.0` 扫描已安装 App 的 7,415 个 JavaScript 文件；Fast 设置、`/fast`、service tier allowance 和 request allowance 均命中，扫描错误为 0；隔离运行时到达 ready，外部路径 App Server 环境中未发现 `main-process-hook.cjs`。Composer Speed 菜单与 conversation fallback 的旧签名未命中，正式账号或中转站的 Fast 请求尚未验证 |
-| `26.911.61220+9647` | 使用 `codexfast 0.79.0` 扫描已安装 App 的 11,001 个 JavaScript 文件；Fast 设置、`/fast`、service tier allowance 和 request allowance 均命中，扫描错误为 0；隔离运行时和 App Server 环境检查通过。正式会话经 `relaunch` 启动且 App Server 无 `main-process-hook.cjs`，但服务端 Fast 请求尚未验证 |
-| `26.930.61225+13232` | 使用 `codexfast 0.79.0` 加本项目扩展实测；新版请求许可函数接受 `chatgpt` 和 `personalAccessToken`，本项目补充该签名并保持自定义 Provider 回退。隔离运行时到达 ready，延迟加载后命中 service tier allowance、request allowance 和 `Fast slash command`，App Server 环境检查通过；服务端 Fast 请求尚未验证 |
+| `26.908.70816+9275` | 使用 `codexfast 0.79.0` 扫描已安装 App 的 7,415 个 JavaScript 文件；Fast 设置、`/fast`、service tier allowance 和 request allowance 均命中，扫描错误为 0；隔离运行时到达 ready，外部路径 App Server 环境中未发现 `main-process-hook.cjs`。Composer Speed 菜单与 conversation fallback 的旧签名未命中 |
+| `26.911.61220+9647` | 使用 `codexfast 0.79.0` 扫描已安装 App 的 11,001 个 JavaScript 文件；Fast 设置、`/fast`、service tier allowance 和 request allowance 均命中，扫描错误为 0；隔离运行时和 App Server 环境检查通过。正式会话经 `relaunch` 启动且 App Server 无 `main-process-hook.cjs` |
+| `26.930.61225+13232` | 使用 `codexfast 0.79.0` 加本项目扩展实测；新版请求许可函数接受 `chatgpt` 和 `personalAccessToken`，本项目补充该签名并保持自定义 Provider 回退。隔离运行时到达 ready，延迟加载后命中 service tier allowance、request allowance 和 `Fast slash command`，App Server 环境检查通过 |
 
 版本表记录的是验证时的客户端行为，不代表同一版本下所有账号、中转站或服务端配置都会得到相同结果。
 
@@ -121,7 +121,7 @@ Ultrafast 的前端扩展使用原生文案、图标和 `ultrafast` 值。原生
 
 该目录覆盖仅用于当前本地进程，使用固定快照，会停止当前会话的远端模型目录刷新。已有自定义目录时需要指定 `CODEXFAST_MODEL_CATALOG_JSON`；不从身份缓存中复用其他账号的模型。显式 `hostConfig.codex_cli_command` 优先于环境变量；远程主机也不适用该本地包装器。
 
-`26.1007` 的前端许可与请求许可均返回 `{fast, ultrafast}`。兼容补丁只为 API Key / 自定义 Provider 路径补充许可，保留官方登录的真实 requirements 和加载状态。所有扩展均需在上游版本过滤后桥接；模型覆盖继续保留新版 selector 的其他字段。回归 fixture 包括对象权限、加载状态、目录保留、幂等、关闭开关和过滤后的行为。客户端静态支持不能证明服务端接收或加速。
+`26.1007` 的前端许可与请求许可均返回 `{fast, ultrafast}`。兼容补丁只为 API Key / 自定义 Provider 路径补充许可，保留官方登录的真实 requirements 和加载状态。所有扩展均需在上游版本过滤后桥接；模型覆盖继续保留新版 selector 的其他字段。回归 fixture 包括对象权限、加载状态、目录保留、幂等、关闭开关和过滤后的行为。本次适配已由使用者通过客户端和实际请求验证，确认 Fast 与 Ultrafast 正常工作。
 
 上游自动更新钩子通过 `NODE_OPTIONS=--require=.../main-process-hook.cjs` 注入 App。App Server 会复制主进程的完整环境，导致终端命令、Chrome 接管和 Computer Use 等子进程也加载该钩子。本项目会让 `childEnvWithAutomaticUpdateSetting()` 不再新增钩子，并清除可能从旧会话继承的 `main-process-hook.cjs` 参数，同时保留其他 `NODE_OPTIONS`；CDP 运行时目标也会排除 `UPDATE_TARGET_SPECS`，自动更新保持官方默认行为。App Server 可由 App 资源目录外的 `codex` 可执行文件启动，隔离测试按父进程和 `app-server` 命令识别它。修改相关逻辑时必须运行 `npm test`，确认准备后的启动器不再注入钩子且不再应用自动更新界面补丁；还要运行 `isolated-test`，确认输出 `Isolated child environment self-test passed`。
 

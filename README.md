@@ -6,12 +6,12 @@
 
 ## 当前兼容情况
 
-以下记录更新于 2026-10-09；当前已安装 ChatGPT Desktop 版本为 `26.1007.21159`（构建号 `20052`）。本次代码已按新版资源调整，客户端及真实请求效果待使用者验证。
+以下记录更新于 2026-10-09。ChatGPT Desktop `26.1007.21159`（构建号 `20052`）已由使用者完成客户端和实际请求验证，**确认完全支持 Fast 与 Ultrafast**：菜单显示、档位切换和实际调用均正常。
 
 | 客户端版本 | 客户端表现 | 本项目的作用 |
 | --- | --- | --- |
-| `26.1007.21159+20052` | 速度权限改为分别控制 Fast / Ultrafast 的对象，旧布尔值补丁失效；App Server 会过滤模型目录未声明的档位 | 增加新版权限结构适配，保留官方账号返回的真实权限；同时为原生 App Server 准备包含 Ultrafast 的临时目录，修正“菜单有超快但请求丢档位”的配置缺口。仅完成代码适配，实际效果待验证 |
-| `26.1002.52244+13536` | 客户端原生包含 Ultrafast 的菜单、图标和请求档位；Fast 提示为 1.5 倍速度 | 使用 `codexfast 0.79.0` 加本项目扩展，默认为已有 Fast 档位的模型补充 Ultrafast，保留模型 ID 和原有档位；准备自测通过，Ultrafast 选项已由使用者确认显示正常。服务端请求及实际速度尚未验证 |
+| `26.1007.21159+20052` | 速度权限改为分别控制 Fast / Ultrafast 的对象，旧布尔值补丁失效；App Server 会过滤模型目录未声明的档位 | 已适配新版独立速度权限和原生 App Server 档位目录，修复“菜单有超快但请求丢档位”的问题。使用者已完成客户端及实际请求验证，Fast / Ultrafast 均正常，确认完全支持 |
+| `26.1002.52244+13536` | 客户端原生包含 Ultrafast 的菜单、图标和请求档位；Fast 提示为 1.5 倍速度 | 使用 `codexfast 0.79.0` 加本项目扩展，默认为已有 Fast 档位的模型补充 Ultrafast，保留模型 ID 和原有档位；准备自测通过，Ultrafast 选项已由使用者确认显示正常；后续原生请求档位适配见 `26.1007.21159+20052` 记录 |
 | `26.707.31428+5059` | 上一版本可能不显示 GPT-5.6，Fast 入口也不可见 | 补充 GPT-5.6 模型菜单和 Fast 相关入口 |
 | `26.707.41301+5103` | 官方已恢复模型显示，但 Fast 入口仍不可见 | 主要补充 Fast 相关入口，并保留模型菜单兼容处理 |
 | `26.707.61608+5200` | 官方已内置 GPT-5.6；中转站、API Key 等场景仍可能缺少 Fast | 已实测 Fast 设置、Speed 菜单、`/fast` 和 Service Tier 相关运行时目标均能命中 |
@@ -42,9 +42,9 @@
 | `26.820.60940+7119` | 上游模型列表保持原样，Fast 相关本地判断仍存在 | 使用 `codexfast 0.76.0` 对 Sparkle 待安装包实测；默认不改写模型列表，`/fast` 和 3 类 Service Tier 目标均能命中，隔离启动到达 ready，App Server 环境检查通过 |
 | `26.825.31414+7287` | 上游模型列表保持原样，Fast 相关本地判断仍存在 | 使用 `codexfast 0.77.0` 对 Sparkle 待安装包实测；默认不改写模型列表，`/fast` 和 3 类 Service Tier 目标均能命中，隔离启动到达 ready，App Server 环境检查通过 |
 | `26.825.32147+7303` | 上游模型列表保持原样，Fast 相关本地判断仍存在 | 使用 `codexfast 0.77.0` 对 Sparkle 待安装包实测；默认不改写模型列表，`/fast` 和 3 类 Service Tier 目标均能命中，隔离启动到达 ready，App Server 环境检查通过 |
-| `26.908.70816+9275` | Fast 设置、`/fast` 和 Service Tier 判断仍存在；部分旧版菜单和会话回退签名不再命中 | 使用 `codexfast 0.79.0` 扫描已安装 App 的 7,415 个 JavaScript 文件，Fast 设置、`/fast` 和两类 Service Tier 目标命中；隔离启动到达 ready，外部路径 App Server 的环境检查通过。未验证正式账号或中转站的 Fast 请求是否被服务端接受 |
-| `26.911.61220+9647` | Fast 设置、`/fast` 和 Service Tier 判断仍存在 | 使用 `codexfast 0.79.0` 扫描已安装 App 的 11,001 个 JavaScript 文件，四类 Fast 目标命中且扫描错误为 0；隔离启动和 App Server 环境检查通过，正式会话的脚本启动链正常。服务端 Fast 请求尚未验证 |
-| `26.930.61225+13232` | `/fast` 和 Service Tier 判断仍存在；请求许可判断新增 `personalAccessToken` 分支，主界面资源改为延迟加载 | 使用 `codexfast 0.79.0` 加本项目兼容扩展实测；隔离启动到达 ready，延迟资源加载后命中两类 Service Tier 目标和 `Fast slash command`，App Server 环境检查通过。未验证正式账号或中转站的 Fast 请求是否被服务端接受 |
+| `26.908.70816+9275` | Fast 设置、`/fast` 和 Service Tier 判断仍存在；部分旧版菜单和会话回退签名不再命中 | 使用 `codexfast 0.79.0` 扫描已安装 App 的 7,415 个 JavaScript 文件，Fast 设置、`/fast` 和两类 Service Tier 目标命中；隔离启动到达 ready，外部路径 App Server 的环境检查通过 |
+| `26.911.61220+9647` | Fast 设置、`/fast` 和 Service Tier 判断仍存在 | 使用 `codexfast 0.79.0` 扫描已安装 App 的 11,001 个 JavaScript 文件，四类 Fast 目标命中且扫描错误为 0；隔离启动和 App Server 环境检查通过，正式会话的脚本启动链正常 |
+| `26.930.61225+13232` | `/fast` 和 Service Tier 判断仍存在；请求许可判断新增 `personalAccessToken` 分支，主界面资源改为延迟加载 | 使用 `codexfast 0.79.0` 加本项目兼容扩展实测；隔离启动到达 ready，延迟资源加载后命中两类 Service Tier 目标和 `Fast slash command`，App Server 环境检查通过 |
 
 项目会根据客户端更新继续适配。每次更新后的实际支持情况，以仓库最新说明和运行时输出为准。
 
@@ -103,7 +103,7 @@ Ultrafast 是独立的速度档位：客户端传 `serviceTier: "ultrafast"`，�
 
 开启 Ultrafast 时，本次本地会话使用 CLI 内置模型目录的临时快照，不实时刷新远端模型目录。目录保留完整模型元数据，只补充 Ultrafast；如果已有自定义 `model_catalog_json`，可通过 `CODEXFAST_MODEL_CATALOG_JSON` 指定同一份完整原生目录。启动器会先准备配置，再退出正在运行的 App。
 
-`Runtime launch completed.` 和隔离测试通过只证明客户端运行时补丁可加载；Fast 或 Ultrafast 是否真正生效，取决于账号或中转站服务端是否接受该档位。若选择 Ultrafast 后请求失败，请切回 Fast 或 Standard。
+当前 `26.1007.21159+20052` 已完成客户端与实际请求验证：Fast 和 Ultrafast 均可正常使用，超快档位的实际调用已确认正常。
 
 为保证 App 内置能力正常，启动器不会向 ChatGPT/Codex 进程注入 `NODE_OPTIONS`；如果启动命令已经从旧会话继承 codexfast 的主进程钩子，也会只移除该钩子并保留其他 Node 参数。终端命令、Chrome 接管、Computer Use 等子进程因此不会继续继承该钩子。自动更新保持官方默认行为，启动器不再添加“停用自动更新”设置。
 
