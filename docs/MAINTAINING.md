@@ -1,0 +1,148 @@
+# 维护者文档
+
+本文面向维护者和贡献者。普通使用方法请查看仓库根目录的 [README](../README.md)。
+
+## 项目边界
+
+本仓库只维护本地启动脚本、测试和文档。启动器会下载并临时准备 MIT 许可的上游 `codexfast`，不会直接修改 `/Applications/Codex.app`、`/Applications/ChatGPT.app` 或其中的 `app.asar`。
+
+启动器不能授予服务端模型权限，也不能保证某个模型 ID、服务层级或界面入口长期可用。
+
+## 适配范围
+
+项目主要处理通过中转站、自定义 Provider 或 API Key 使用 Codex 时，Fast 入口因认证路径或客户端判断而不可见的问题。默认启动必须保留上游 `model/list` 结果；模型覆盖仅作为显式启用的兼容选项。官方 ChatGPT 登录路径应单独验证，不应把本项目描述为所有用户都必须使用的工具。
+
+当前适配记录：
+
+| 客户端版本 | 验证结果 |
+| --- | --- |
+| `26.707.31428+5059` | 可补充 GPT-5.6 模型菜单及 Fast 相关入口 |
+| `26.707.41301+5103` | 官方模型显示已恢复；关键 Fast、service tier 和模型兼容补丁目标仍能命中 |
+| `26.707.61608+5200` | 使用 `codexfast 0.50.0` 扫描真实 `app.asar` 中 4,951 个 JS 文件；Fast、Speed、`/fast`、service tier 和自动更新相关目标全部命中，缺失目标为 0 |
+| `26.707.62119+5211` | 使用 `codexfast 0.51.0` 扫描真实 `app.asar` 中 4,950 个 JS 文件；7 类必需目标全部命中，缺失目标为 0，隔离运行时启动成功到达 ready 状态 |
+| `26.707.71524+5263` | 使用 `codexfast 0.51.0` 扫描真实 `app.asar` 中 4,947 个 JS 文件；7 类必需目标全部命中，缺失目标为 0，隔离运行时启动成功到达 ready 状态 |
+| `26.707.72221+5307` | 使用 `codexfast 0.52.0` 扫描真实 `app.asar` 中 4,948 个 JS 文件；7 类必需目标全部命中，缺失目标为 0，隔离运行时启动成功到达 ready 状态 |
+| `26.707.91948+5440` | 使用 `codexfast 0.53.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.715.21316+5484` | 使用 `codexfast 0.54.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.715.31925+5551` | 使用 `codexfast 0.56.0` 对已安装 App 实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.715.52143+5591` | 使用 `codexfast 0.56.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.715.61943+5628` | 使用 `codexfast 0.57.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.715.71837+5702` | 使用 `codexfast 0.59.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.715.72028+5706` | 使用 `codexfast 0.59.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.715.72359+5718` | 使用 `codexfast 0.60.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.721.30844+5813` | 使用 `codexfast 0.61.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.721.31836+5828` | 使用 `codexfast 0.62.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.721.41059+5848` | 使用 `codexfast 0.63.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.721.81911+5973` | 使用 `codexfast 0.64.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.727.40816+6067` | 使用 `codexfast 0.65.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.730.61309+6223` | 使用 `codexfast 0.67.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.730.61639+6234` | 使用 `codexfast 0.68.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.803.41515+6321` | 使用 `codexfast 0.69.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.803.61601+6396` | 使用 `codexfast 0.70.0` 对 Sparkle 待安装包实测；Composer Speed 菜单、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.810.52044+6662` | 使用 `codexfast 0.72.0` 对 Sparkle 待安装包实测；新版 Speed 菜单只依赖非空 Service Tier 选项，不再需要单独解除菜单开关。本项目新增模型筛选器签名适配后，GPT-5.6 模型 ID/列表、`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.814.41407+6720` | 使用 `codexfast 0.73.0` 对已安装 App 实测；默认关闭模型覆盖，运行时不命中任何模型改写目标，`/fast`、3 类 service tier 和自动更新目标均命中，隔离运行时启动成功到达 ready 状态 |
+| `26.818.31338+6892` | 使用 `codexfast 0.74.1` 对 Sparkle 待安装包中的 6,848 个 JavaScript 文件实扫；默认关闭模型覆盖，运行时不命中任何模型改写目标，Fast 设置、`/fast`、3 类 service tier、自动更新 setting/schema 均命中，扫描错误为 0；本轮仅记录静态实扫结果，不计入隔离运行时 ready 验证 |
+| `26.818.61809+7019` | 使用 `codexfast 0.76.0` 对已安装 App 实测；默认关闭模型覆盖且排除自动更新目标，`/fast`、service tier allowance、request allowance 和 conversation fallback 均命中；隔离运行时启动成功到达 ready，真实 App Server 环境中未发现 `main-process-hook.cjs` |
+| `26.820.60940+7119` | 使用 `codexfast 0.76.0` 对 Sparkle 待安装包实测；默认关闭模型覆盖且排除自动更新目标，`/fast`、service tier allowance、request allowance 和 conversation fallback 均命中；隔离运行时启动成功到达 ready，真实 App Server 环境中未发现 `main-process-hook.cjs` |
+| `26.825.31414+7287` | 使用 `codexfast 0.77.0` 对 Sparkle 待安装包实测；默认关闭模型覆盖且排除自动更新目标，`/fast`、service tier allowance、request allowance 和 conversation fallback 均命中；隔离运行时启动成功到达 ready，真实 App Server 环境中未发现 `main-process-hook.cjs` |
+| `26.825.32147+7303` | 使用 `codexfast 0.77.0` 对 Sparkle 待安装包实测；默认关闭模型覆盖且排除自动更新目标，`/fast`、service tier allowance、request allowance 和 conversation fallback 均命中；隔离运行时启动成功到达 ready，真实 App Server 环境中未发现 `main-process-hook.cjs` |
+| `26.908.70816+9275` | 使用 `codexfast 0.79.0` 扫描已安装 App 的 7,415 个 JavaScript 文件；Fast 设置、`/fast`、service tier allowance 和 request allowance 均命中，扫描错误为 0；隔离运行时到达 ready，外部路径 App Server 环境中未发现 `main-process-hook.cjs`。Composer Speed 菜单与 conversation fallback 的旧签名未命中，正式账号或中转站的 Fast 请求尚未验证 |
+| `26.911.61220+9647` | 使用 `codexfast 0.79.0` 扫描已安装 App 的 11,001 个 JavaScript 文件；Fast 设置、`/fast`、service tier allowance 和 request allowance 均命中，扫描错误为 0；隔离运行时和 App Server 环境检查通过。正式会话经 `relaunch` 启动且 App Server 无 `main-process-hook.cjs`，但服务端 Fast 请求尚未验证 |
+| `26.930.61225+13232` | 使用 `codexfast 0.79.0` 加本项目扩展实测；新版请求许可函数接受 `chatgpt` 和 `personalAccessToken`，本项目补充该签名并保持自定义 Provider 回退。隔离运行时到达 ready，延迟加载后命中 service tier allowance、request allowance 和 `Fast slash command`，App Server 环境检查通过；服务端 Fast 请求尚未验证 |
+
+版本表记录的是验证时的客户端行为，不代表同一版本下所有账号、中转站或服务端配置都会得到相同结果。
+
+## 仓库结构
+
+- `bin/codexfast-launcher.mjs`：版本检测、临时兼容处理、运行时启动和进程管理。
+- `test/test-codexfast-launcher.mjs`：启动器回归测试。
+- `README.md`：普通用户使用说明。
+- `.gitignore`：阻止 App 文件、上游包、日志和临时产物进入仓库。
+
+## 本地检查
+
+提交前至少运行：
+
+```zsh
+npm run check
+npm test
+git diff --check
+```
+
+检查当前 App 检测结果：
+
+```zsh
+node bin/codexfast-launcher.mjs status
+```
+
+只准备临时启动器并运行内置自测：
+
+```zsh
+node bin/codexfast-launcher.mjs prepare
+```
+
+启动隔离 Profile，确认运行时能够到达 ready 状态并自动清理：
+
+```zsh
+node bin/codexfast-launcher.mjs isolated-test
+```
+
+预演重启流程，不退出当前 App：
+
+```zsh
+node bin/codexfast-launcher.mjs relaunch --dry-run
+```
+
+## App 更新后的兼容检查
+
+1. 执行 `status`，确认 App 路径、真实可执行文件名、版本号和构建号读取正确。
+2. 执行 `prepare`，确认 CDP frame 和 runtime patch body 自测通过。
+3. 执行 `isolated-test`，确认输出 `Runtime launch completed.`，等待延迟资源观察窗口结束并完成清理。
+4. 必要时使用 `CODEXFAST_DEBUG_RUNTIME=1` 检查延迟加载资源的命中结果。默认启动不应出现模型改写目标；Fast 相关条目会随 App 代码变化，不应在用户文档中承诺固定列表。
+5. 仅在隔离测试通过后，使用 `relaunch` 验证真实 App。
+
+如果 `prepare` 通过但某个界面入口缺失，应检查新版渲染代码中的模型列表、Fast 命令和 service tier 判断是否改变。优先更新精确匹配逻辑，并为变化补充回归测试。
+
+## 环境变量
+
+- `CODEXFAST_MODEL_ID`：显式覆盖模型 ID；默认未设置，不修改上游模型列表。
+- `CODEXFAST_MODEL_DISPLAY_NAME`：覆盖模型显示名称。
+- `CODEXFAST_APP_BUNDLE`：指定待检测的 App 路径。
+- `CODEXFAST_PACKAGE_TARBALL`：使用本地 `codexfast` tarball。
+- `CODEXFAST_DEBUG_RUNTIME`：启用上游运行时调试输出。
+
+上游自动更新钩子通过 `NODE_OPTIONS=--require=.../main-process-hook.cjs` 注入 App。App Server 会复制主进程的完整环境，导致终端命令、Chrome 接管和 Computer Use 等子进程也加载该钩子。本项目会让 `childEnvWithAutomaticUpdateSetting()` 不再新增钩子，并清除可能从旧会话继承的 `main-process-hook.cjs` 参数，同时保留其他 `NODE_OPTIONS`；CDP 运行时目标也会排除 `UPDATE_TARGET_SPECS`，自动更新保持官方默认行为。App Server 可由 App 资源目录外的 `codex` 可执行文件启动，隔离测试按父进程和 `app-server` 命令识别它。修改相关逻辑时必须运行 `npm test`，确认准备后的启动器不再注入钩子且不再应用自动更新界面补丁；还要运行 `isolated-test`，确认输出 `Isolated child environment self-test passed`。
+
+## 开源与发布检查
+
+公开提交中不得包含：
+
+- OpenAI App、`app.asar`、`.dmg`、`.zip` 或其他应用资源。
+- `codexfast-*.tgz` 等上游二进制或打包产物。
+- 账号、token、session、cookie、API key 或授权请求头。
+- `~/.codex`、用户目录、临时目录和运行日志。
+- 本地修改后的 App 备份。
+
+发布前建议将待分发的项目文件复制到新目录，再运行：
+
+```zsh
+npm run check
+npm test
+node bin/codexfast-launcher.mjs status
+node bin/codexfast-launcher.mjs prepare
+node bin/codexfast-launcher.mjs isolated-test
+```
+
+同时确认：
+
+- 待分发文件包含最新修改。
+- README 中的项目名称、命令路径和相对链接有效。
+- README 保留对 [LINUX DO](https://linux.do) 社区的公开链接。
+- 启动脚本保留可执行权限。
+- `npm pack --dry-run` 只包含预期文件。
+
+## 上游与许可证
+
+本项目会下载并准备上游项目 [Veath/codexfast](https://github.com/Veath/codexfast)。如需在其他分发形式中包含上游代码或包，应保留其 MIT License 和来源说明。
+
+本仓库自身使用 [MIT License](../LICENSE)。

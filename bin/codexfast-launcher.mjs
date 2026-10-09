@@ -1,0 +1,743 @@
+#!/usr/bin/env node
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const plistBuddy = "/usr/libexec/PlistBuddy";
+
+function appLooksLikeCodex(bundlePath) {
+  const plistPath = path.join(bundlePath, "Contents", "Info.plist");
+  if (!fs.existsSync(plistPath)) return false;
+  const result = spawnSync(plistBuddy, ["-c", "Print :CFBundleIdentifier", plistPath], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return result.status === 0 && result.stdout.trim() === "com.openai.codex";
+}
+
+function resolveAppBundle() {
+  if (process.env.CODEXFAST_APP_BUNDLE) return process.env.CODEXFAST_APP_BUNDLE;
+  if (appLooksLikeCodex("/Applications/Codex.app")) return "/Applications/Codex.app";
+  if (appLooksLikeCodex("/Applications/ChatGPT.app")) return "/Applications/ChatGPT.app";
+  return "/Applications/Codex.app";
+}
+
+const appBundle = resolveAppBundle();
+
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
+    ...options,
+  });
+  if (result.status !== 0) {
+    const detail = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+    throw new Error(`${command} ${args.join(" ")} failed${detail ? `:\n${detail}` : ""}`);
+  }
+  return result.stdout ?? "";
+}
+
+function readPlist(key) {
+  return run(plistBuddy, ["-c", `Print :${key}`, path.join(appBundle, "Contents", "Info.plist")]).trim();
+}
+
+function appVersionInfo() {
+  const version = readPlist("CFBundleShortVersionString");
+  const build = readPlist("CFBundleVersion");
+  const executable = readPlist("CFBundleExecutable");
+  return {
+    version,
+    build,
+    executable,
+    versionKey: `${version}+${build}`,
+  };
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function parseProcessLine(line) {
+  const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/);
+  if (!match) return null;
+  return {
+    pid: Number.parseInt(match[1], 10),
+    ppid: Number.parseInt(match[2], 10),
+    state: match[3],
+    command: match[4],
+    line: line.trim(),
+  };
+}
+
+function mainCodexExecutablePath() {
+  try {
+    return path.join(appBundle, "Contents", "MacOS", readPlist("CFBundleExecutable"));
+  } catch {
+    return path.join(appBundle, "Contents", "MacOS", "Codex");
+  }
+}
+
+function isMainCodexProcess(processInfo) {
+  const executable = mainCodexExecutablePath();
+  return processInfo.command === executable || processInfo.command.startsWith(`${executable} `);
+}
+
+function classifyCodexProcesses(processes) {
+  const appProcesses = processes.filter((processInfo) => processInfo.command.includes(`${appBundle}/Contents/`));
+  return {
+    all: appProcesses,
+    main: appProcesses.filter(isMainCodexProcess),
+    support: appProcesses.filter((processInfo) => !isMainCodexProcess(processInfo)),
+  };
+}
+
+function readProcesses() {
+  const ps = spawnSync("ps", ["ax", "-o", "pid=", "-o", "ppid=", "-o", "state=", "-o", "command="], { encoding: "utf8" });
+  if (ps.status !== 0) return [];
+  return (ps.stdout ?? "")
+    .split("\n")
+    .map(parseProcessLine)
+    .filter(Boolean);
+}
+
+function readCodexProcesses() {
+  return classifyCodexProcesses(readProcesses());
+}
+
+function isAppServerChild(processInfo, mainPid) {
+  return processInfo.ppid === mainPid && /(?:^|\s)app-server(?:\s|$)/.test(processInfo.command);
+}
+
+function printProcessList(title, processes) {
+  if (processes.length === 0) return;
+  console.log(title);
+  for (const processInfo of processes.slice(0, 12)) console.log(`  ${processInfo.line}`);
+  if (processes.length > 12) console.log(`  ... ${processes.length - 12} more`);
+}
+
+function printStatus() {
+  const info = appVersionInfo();
+  const processes = readCodexProcesses();
+  console.log(`App bundle: ${appBundle}`);
+  console.log(`App executable: ${info.executable}`);
+  console.log(`Version key: ${info.versionKey}`);
+  console.log(`Codex.app main running: ${processes.main.length > 0 ? "yes" : "no"}`);
+  console.log(`Codex support processes: ${processes.support.length}`);
+  console.log(`Codex.app running: ${processes.main.length > 0 ? "yes" : "no"}`);
+  printProcessList("Running Codex main processes:", processes.main);
+  printProcessList("Running Codex support processes:", processes.support);
+}
+
+function requestCodexQuit() {
+  const result = spawnSync("osascript", ["-e", 'tell application id "com.openai.codex" to quit'], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 5_000,
+  });
+  if (result.error?.code === "ETIMEDOUT") return false;
+  if (result.status !== 0) {
+    const detail = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+    throw new Error(`Could not ask Codex.app to quit${detail ? `:\n${detail}` : ""}`);
+  }
+  return true;
+}
+
+function terminateMainCodexProcesses() {
+  for (const processInfo of readCodexProcesses().main) {
+    try {
+      process.kill(processInfo.pid, "SIGTERM");
+    } catch {}
+  }
+}
+
+function waitForMainCodexExit(timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (readCodexProcesses().main.length === 0) return true;
+    sleep(500);
+  }
+  return readCodexProcesses().main.length === 0;
+}
+
+function addVersionToObject(source, versionKey, description) {
+  if (source.includes(`"${versionKey}"`)) return source;
+  return source.replace(
+    /const SUPPORTED_APP_VERSIONS = \{([\s\S]*?)\};\nconst context =/,
+    (_match, body) =>
+      `const SUPPORTED_APP_VERSIONS = {${body}, "${versionKey}": "${description}" };\nconst context =`,
+  );
+}
+
+function addVersionToSet(source, setName, versionKey) {
+  const setRegex = new RegExp(`const ${setName} = new Set\\(\\[([\\s\\S]*?)\\]\\);`);
+  return source.replace(setRegex, (match, body) => {
+    if (body.includes(`"${versionKey}"`)) return match;
+    return `const ${setName} = new Set([${body}    "${versionKey}",\n]);`;
+  });
+}
+
+function addUserDataDir(source, userDataDir) {
+  if (!userDataDir) return source;
+  if (source.includes(`--user-data-dir=${userDataDir}`)) return source;
+  const escaped = userDataDir.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+  return source.replace(
+    '        "--remote-debugging-address=127.0.0.1",\n    ],',
+    `        "--remote-debugging-address=127.0.0.1",\n        "--user-data-dir=${escaped}",\n    ],`,
+  );
+}
+
+function addExecutableName(source, executableName) {
+  if (executableName === "Codex") return source;
+  return source.replaceAll('"Contents", "MacOS", "Codex"', `"Contents", "MacOS", "${executableName}"`);
+}
+
+function escapeRegexLiteral(text) {
+  return text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
+function modelDisplayName(modelId) {
+  return process.env.CODEXFAST_MODEL_DISPLAY_NAME ?? modelId.replace(/^gpt-/i, "GPT-");
+}
+
+function patcherSourceLiteralMatch(source) {
+  return source.match(/const __PATCHER_SOURCE__ = ((?:"(?:[^"\\]|\\.)*"));/);
+}
+
+function replacePatcherSource(source, transform) {
+  const match = patcherSourceLiteralMatch(source);
+  if (!match) return source;
+  const patcherSource = JSON.parse(match[1]);
+  const nextPatcherSource = transform(patcherSource);
+  if (nextPatcherSource === patcherSource) return source;
+  return source.replace(match[0], `const __PATCHER_SOURCE__ = ${JSON.stringify(nextPatcherSource)};`);
+}
+
+function currentModelRuntimePatchSource(modelId, displayName) {
+  return `
+// codexfast-model-override-current-extension
+const CODEXFAST_MODEL_OVERRIDE_SOURCE_ID = "gpt-5.5";
+const CODEXFAST_MODEL_OVERRIDE_TARGET_ID = ${JSON.stringify(modelId)};
+const CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME = ${JSON.stringify(displayName)};
+const CODEXFAST_MODEL_OVERRIDE_SOURCE_LITERAL = JSON.stringify(CODEXFAST_MODEL_OVERRIDE_SOURCE_ID);
+const CODEXFAST_MODEL_OVERRIDE_TARGET_LITERAL = JSON.stringify(CODEXFAST_MODEL_OVERRIDE_TARGET_ID);
+const CODEXFAST_MODEL_OVERRIDE_DISPLAY_LITERAL = JSON.stringify(CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME);
+const CURRENT_MODEL_LIST_SELECT_SIGNATURE = /select:\\(\\{data:([A-Za-z_$][\\w$]*)\\}\\)=>([A-Za-z_$][\\w$]*)\\(\\{authMethod:([A-Za-z_$][\\w$]*),availableModels:new Set\\(([A-Za-z_$][\\w$]*)\\),defaultModel:([A-Za-z_$][\\w$]*),enabledReasoningEfforts:([A-Za-z_$][\\w$]*),includeUltraReasoningEffort:([A-Za-z_$][\\w$]*),models:\\1,useHiddenModels:([A-Za-z_$][\\w$]*)\\}\\)/;
+const CURRENT_MODEL_LIST_SELECT_SIGNATURE_WITH_ADDITIONAL_MODELS = /select:\\(\\{data:([A-Za-z_$][\\w$]*)\\}\\)=>([A-Za-z_$][\\w$]*)\\(\\{additionalAvailableModels:new Set\\(([A-Za-z_$][\\w$]*)\\),authMethod:([A-Za-z_$][\\w$]*),availableModels:([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)?),defaultModel:([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)?),enabledReasoningEfforts:([A-Za-z_$][\\w$]*),includeUltraReasoningEffort:([A-Za-z_$][\\w$]*),isCustomModelProvider:([A-Za-z_$][\\w$]*),models:\\1,useHiddenModels:([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)?)\\}\\)/;
+function codexfastCurrentModelListExpression(modelsVar) {
+    return \`(()=>{let m=\${modelsVar};if(!Array.isArray(m))return m;let s=\${CODEXFAST_MODEL_OVERRIDE_SOURCE_LITERAL},t=\${CODEXFAST_MODEL_OVERRIDE_TARGET_LITERAL},d=\${CODEXFAST_MODEL_OVERRIDE_DISPLAY_LITERAL},h=m.some(e=>e?.model===t),o=[];for(let e of m){if(h&&e?.model===s)continue;let n=e?.model===s||e?.model===t?{...e,id:t,model:t,displayName:e.displayName&&e.model===t?e.displayName:d,hidden:!1,additionalSpeedTiers:Array.isArray(e.additionalSpeedTiers)?e.additionalSpeedTiers.includes(\\\`fast\\\`)?e.additionalSpeedTiers:[...e.additionalSpeedTiers,\\\`fast\\\`]:[\\\`fast\\\`],serviceTiers:Array.isArray(e.serviceTiers)&&e.serviceTiers.length>0?e.serviceTiers:[\${GPT_55_FAST_SERVICE_TIER}],defaultServiceTier:e.defaultServiceTier??null}:e;if(n?.model===t&&o.some(e=>e?.model===t))continue;o.push(n)}return o.some(e=>e?.model===t)?o:[...o,\${GPT_55_MODEL_ENTRY}]})()\`;
+}
+function codexfastPatchCurrentModelList(_match, modelsVar, selectorVar, authMethodVar, availableModelsVar, defaultModelVar, effortsVar, ultraVar, hiddenVar) {
+    return \`select:({data:\${modelsVar}})=>\${selectorVar}({authMethod:\${authMethodVar},availableModels:new Set([...\${availableModelsVar},\${CODEXFAST_MODEL_OVERRIDE_TARGET_LITERAL}]),defaultModel:\${defaultModelVar}===\${CODEXFAST_MODEL_OVERRIDE_SOURCE_LITERAL}?\${CODEXFAST_MODEL_OVERRIDE_TARGET_LITERAL}:\${defaultModelVar},enabledReasoningEfforts:\${effortsVar},includeUltraReasoningEffort:\${ultraVar},models:/*codexfast-model-override-list*/\${codexfastCurrentModelListExpression(modelsVar)},useHiddenModels:\${hiddenVar}})\`;
+}
+function codexfastPatchCurrentModelListWithAdditionalModels(_match, modelsVar, selectorVar, additionalModelsVar, authMethodVar, availableModelsVar, defaultModelVar, effortsVar, ultraVar, customProviderVar, hiddenVar) {
+    return \`select:({data:\${modelsVar}})=>\${selectorVar}({additionalAvailableModels:new Set([...\${additionalModelsVar},\${CODEXFAST_MODEL_OVERRIDE_TARGET_LITERAL}]),authMethod:\${authMethodVar},availableModels:new Set([...\${availableModelsVar},\${CODEXFAST_MODEL_OVERRIDE_TARGET_LITERAL}]),defaultModel:\${defaultModelVar}===\${CODEXFAST_MODEL_OVERRIDE_SOURCE_LITERAL}?\${CODEXFAST_MODEL_OVERRIDE_TARGET_LITERAL}:\${defaultModelVar},enabledReasoningEfforts:\${effortsVar},includeUltraReasoningEffort:\${ultraVar},isCustomModelProvider:\${customProviderVar},models:/*codexfast-model-override-list*/\${codexfastCurrentModelListExpression(modelsVar)},useHiddenModels:\${hiddenVar}})\`;
+}
+function codexfastReplaceModelIdLiterals(content) {
+    return content
+        .replaceAll(\`\\\`\${CODEXFAST_MODEL_OVERRIDE_SOURCE_ID}\\\`\`, \`\\\`\${CODEXFAST_MODEL_OVERRIDE_TARGET_ID}\\\`\`)
+        .replaceAll(CODEXFAST_MODEL_OVERRIDE_SOURCE_LITERAL, CODEXFAST_MODEL_OVERRIDE_TARGET_LITERAL)
+        .replaceAll(\`'\${CODEXFAST_MODEL_OVERRIDE_SOURCE_ID}'\`, \`'\${CODEXFAST_MODEL_OVERRIDE_TARGET_ID}'\`);
+}
+function codexfastApplyCurrentModelRuntimePatchesToBody(_resourcePath, body) {
+    let content = body;
+    const matchedLabels = [];
+    const patchedLabels = [];
+    const alreadyPatchedLabels = [];
+    const recordReplacement = (label, nextContent) => {
+        if (nextContent === content) {
+            return;
+        }
+        matchedLabels.push(label);
+        patchedLabels.push(label);
+        content = nextContent;
+    };
+    if (content.includes("codexfast-model-override-list")) {
+        matchedLabels.push(\`\${CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME} model list current\`);
+        alreadyPatchedLabels.push(\`\${CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME} model list current\`);
+    } else {
+        if (content.includes(CODEXFAST_MODEL_OVERRIDE_SOURCE_ID)) {
+            recordReplacement(\`\${CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME} model id literals\`, codexfastReplaceModelIdLiterals(content));
+        }
+        recordReplacement(\`\${CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME} model list current\`, content.replace(CURRENT_MODEL_LIST_SELECT_SIGNATURE_WITH_ADDITIONAL_MODELS, codexfastPatchCurrentModelListWithAdditionalModels));
+        recordReplacement(\`\${CODEXFAST_MODEL_OVERRIDE_TARGET_DISPLAY_NAME} model list current\`, content.replace(CURRENT_MODEL_LIST_SELECT_SIGNATURE, codexfastPatchCurrentModelList));
+    }
+    return { content, matchedLabels, patchedLabels, alreadyPatchedLabels };
+}
+function codexfastMergeRuntimePatchResults(baseResult, extensionResult) {
+    return {
+        content: extensionResult.content,
+        matchedLabels: [...baseResult.matchedLabels, ...extensionResult.matchedLabels],
+        patchedLabels: [...baseResult.patchedLabels, ...extensionResult.patchedLabels],
+        alreadyPatchedLabels: [...baseResult.alreadyPatchedLabels, ...extensionResult.alreadyPatchedLabels],
+    };
+}
+const codexfastPreviousApplyRuntimePatchesToBody = applyRuntimePatchesToBody;
+applyRuntimePatchesToBody = function(resourcePath, body) {
+    const result = codexfastPreviousApplyRuntimePatchesToBody(resourcePath, body);
+    return codexfastMergeRuntimePatchResults(result, codexfastApplyCurrentModelRuntimePatchesToBody(resourcePath, result.content));
+};
+`;
+}
+
+function addCurrentModelRuntimePatch(source) {
+  const modelId = (process.env.CODEXFAST_MODEL_ID ?? "").trim();
+  if (!modelId || modelId === "gpt-5.5") return source;
+  if (source.includes("codexfast-model-override-current-extension")) return source;
+  const displayName = modelDisplayName(modelId);
+  return replacePatcherSource(source, (patcherSource) => `${patcherSource}${currentModelRuntimePatchSource(modelId, displayName)}`);
+}
+
+function preserveRuntimePatchExtensionsAfterTargetFiltering(source) {
+  const hasServiceTierExtension = source.includes("codexfast-service-tier-request-personal-access-token-extension");
+  const hasCurrentModelExtension = source.includes("codexfast-model-override-current-extension");
+  if (!hasServiceTierExtension && !hasCurrentModelExtension) return source;
+  const before = [
+    "  return { content, matchedLabels, patchedLabels, alreadyPatchedLabels };",
+    "};`;",
+    "}",
+    "async function enableRuntimePatchInterception",
+  ].join("\n");
+  const after = [
+    "  const codexfastFilteredResult = { content, matchedLabels, patchedLabels, alreadyPatchedLabels };",
+    "  // codexfast-runtime-extension-filter-bridge",
+    "  const codexfastMergeFilteredResult = (baseResult, extensionResult) => ({",
+    "    content: extensionResult.content,",
+    "    matchedLabels: [...baseResult.matchedLabels, ...extensionResult.matchedLabels],",
+    "    patchedLabels: [...baseResult.patchedLabels, ...extensionResult.patchedLabels],",
+    "    alreadyPatchedLabels: [...baseResult.alreadyPatchedLabels, ...extensionResult.alreadyPatchedLabels],",
+    "  });",
+    "  let codexfastExtendedResult = codexfastFilteredResult;",
+    '  if (typeof codexfastApplyServiceTierRequestPatPatch === "function" && !codexfastExtendedResult.matchedLabels.includes("Speed service tier request allowance")) {',
+    "    codexfastExtendedResult = codexfastMergeFilteredResult(codexfastExtendedResult, codexfastApplyServiceTierRequestPatPatch(_resourcePath, codexfastExtendedResult.content));",
+    "  }",
+    '  if (typeof codexfastApplyCurrentModelRuntimePatchesToBody === "function") {',
+    "    codexfastExtendedResult = codexfastMergeFilteredResult(codexfastExtendedResult, codexfastApplyCurrentModelRuntimePatchesToBody(_resourcePath, codexfastExtendedResult.content));",
+    "  }",
+    "  return codexfastExtendedResult;",
+    "};`;",
+    "}",
+    "async function enableRuntimePatchInterception",
+  ].join("\n");
+  const nextSource = source.replace(before, after);
+  if (nextSource === source) {
+    throw new Error("Could not preserve runtime patch extensions after codexfast target filtering.");
+  }
+  return nextSource;
+}
+
+function addModelOverride(source) {
+  const modelId = (process.env.CODEXFAST_MODEL_ID ?? "").trim();
+  if (!modelId || modelId === "gpt-5.5") return source;
+  return source
+    .replaceAll("gpt-5\\.5", escapeRegexLiteral(modelId))
+    .replaceAll("gpt-5.5", modelId)
+    .replaceAll("GPT-5.5", modelDisplayName(modelId));
+}
+
+function addAppBundle(source) {
+  if (appBundle === "/Applications/Codex.app") return source;
+  return source.replaceAll('"/Applications/Codex.app"', JSON.stringify(appBundle));
+}
+
+function allowWrapperManagedRunningCheck(source) {
+  return source.replace(
+    '    if (process.env.CODEXFAST_TEST_CODEX_RUNNING === "1") {\n        return { ok: true, running: true };\n    }\n',
+    '    if (process.env.CODEXFAST_WRAPPER_NO_MAIN_PROCESS === "1") {\n        return { ok: true, running: false };\n    }\n    if (process.env.CODEXFAST_TEST_CODEX_RUNNING === "1") {\n        return { ok: true, running: true };\n    }\n',
+  );
+}
+
+function disableMainProcessAutomaticUpdateHook(source) {
+  if (!source.includes("function childEnvWithAutomaticUpdateSetting")) return source;
+  if (source.includes("codexfast-launcher: remove an inherited codexfast hook")) return source;
+
+  const nextSource = source.replace(
+    /function childEnvWithAutomaticUpdateSetting\(env = process\.env\) \{[\s\S]*?\n\}/,
+    [
+      "function childEnvWithAutomaticUpdateSetting(env = process.env) {",
+      "    // codexfast-launcher: remove an inherited codexfast hook without changing other Node options",
+      '    const nodeOptions = env.NODE_OPTIONS?.replace(/(?:^|\\s)--require=(?:"[^"]*main-process-hook\\.cjs"|\'[^\']*main-process-hook\\.cjs\'|[^\\s]*main-process-hook\\.cjs)/gu, " ").trim();',
+      '    if ((nodeOptions || "") === (env.NODE_OPTIONS?.trim() || "")) return env;',
+      "    const childEnv = { ...env };",
+      "    if (nodeOptions) childEnv.NODE_OPTIONS = nodeOptions;",
+      "    else delete childEnv.NODE_OPTIONS;",
+      "    return childEnv;",
+      "}",
+    ].join("\n"),
+  );
+  if (nextSource === source) {
+    throw new Error("Could not disable the codexfast automatic-update process hook.");
+  }
+  return nextSource;
+}
+
+function disableAutomaticUpdateRuntimeTargets(source) {
+  return replacePatcherSource(source, (patcherSource) => {
+    const targetEntry = "    ...UPDATE_TARGET_SPECS,\n";
+    if (!patcherSource.includes(targetEntry)) return patcherSource;
+    return patcherSource.replace(targetEntry, "");
+  });
+}
+
+function serviceTierRequestAllowanceRuntimePatchSource() {
+  return [
+    "",
+    "// codexfast-service-tier-request-personal-access-token-extension",
+    'const CODEXFAST_SERVICE_TIER_REQUEST_PAT_LABEL = "Speed service tier request allowance";',
+    'const CODEXFAST_SERVICE_TIER_REQUEST_PAT_GUARDED_SIGNATURE = /(async function [A-Za-z_$][\\w$]*\\(([A-Za-z_$][\\w$]*),([A-Za-z_$][\\w$]*)\\)\\{let ([A-Za-z_$][\\w$]*)=await [A-Za-z_$][\\w$]*\\(\\2,\\3\\);if\\(\\4!==`chatgpt`&&\\4!==`personalAccessToken`\\)return)!1(;let [A-Za-z_$][\\w$]*=await [A-Za-z_$][\\w$]*\\(\\2,\\3,\\{priority:`critical`\\}\\);return \\2\\.query\\.setData\\([A-Za-z_$][\\w$]*,\\{authMethod:\\4,hostId:\\3\\},[A-Za-z_$][\\w$]*\\),[A-Za-z_$][\\w$]*\\.requirements\\?\\.featureRequirements\\?\\.fast_mode!==!1\\})/;',
+    'const CODEXFAST_SERVICE_TIER_REQUEST_PAT_PATCHED_SIGNATURE = /(async function [A-Za-z_$][\\w$]*\\(([A-Za-z_$][\\w$]*),([A-Za-z_$][\\w$]*)\\)\\{let ([A-Za-z_$][\\w$]*)=await [A-Za-z_$][\\w$]*\\(\\2,\\3\\);if\\(\\4!==`chatgpt`&&\\4!==`personalAccessToken`\\)return)!0(;let [A-Za-z_$][\\w$]*=await [A-Za-z_$][\\w$]*\\(\\2,\\3,\\{priority:`critical`\\}\\);return \\2\\.query\\.setData\\([A-Za-z_$][\\w$]*,\\{authMethod:\\4,hostId:\\3\\},[A-Za-z_$][\\w$]*\\),[A-Za-z_$][\\w$]*\\.requirements\\?\\.featureRequirements\\?\\.fast_mode!==!1\\})/;',
+    "function codexfastApplyServiceTierRequestPatPatch(_resourcePath, body) {",
+    "    const guarded = CODEXFAST_SERVICE_TIER_REQUEST_PAT_GUARDED_SIGNATURE.test(body);",
+    "    const patched = CODEXFAST_SERVICE_TIER_REQUEST_PAT_PATCHED_SIGNATURE.test(body);",
+    "    if (!guarded && !patched) return { content: body, matchedLabels: [], patchedLabels: [], alreadyPatchedLabels: [] };",
+    '    const content = guarded ? body.replace(CODEXFAST_SERVICE_TIER_REQUEST_PAT_GUARDED_SIGNATURE, "$1!0$5") : body;',
+    "    return {",
+    "        content,",
+    "        matchedLabels: [CODEXFAST_SERVICE_TIER_REQUEST_PAT_LABEL],",
+    "        patchedLabels: guarded ? [CODEXFAST_SERVICE_TIER_REQUEST_PAT_LABEL] : [],",
+    "        alreadyPatchedLabels: patched ? [CODEXFAST_SERVICE_TIER_REQUEST_PAT_LABEL] : [],",
+    "    };",
+    "}",
+    "const codexfastPreviousApplyRuntimePatchesToBodyForPat = applyRuntimePatchesToBody;",
+    "applyRuntimePatchesToBody = function(resourcePath, body) {",
+    "    const baseResult = codexfastPreviousApplyRuntimePatchesToBodyForPat(resourcePath, body);",
+    "    if (baseResult.matchedLabels.includes(CODEXFAST_SERVICE_TIER_REQUEST_PAT_LABEL)) return baseResult;",
+    "    const extensionResult = codexfastApplyServiceTierRequestPatPatch(resourcePath, baseResult.content);",
+    "    return {",
+    "        content: extensionResult.content,",
+    "        matchedLabels: [...baseResult.matchedLabels, ...extensionResult.matchedLabels],",
+    "        patchedLabels: [...baseResult.patchedLabels, ...extensionResult.patchedLabels],",
+    "        alreadyPatchedLabels: [...baseResult.alreadyPatchedLabels, ...extensionResult.alreadyPatchedLabels],",
+    "    };",
+    "};",
+    "",
+  ].join("\n");
+}
+
+function addServiceTierRequestAllowanceRuntimePatch(source) {
+  if (source.includes("codexfast-service-tier-request-personal-access-token-extension")) return source;
+  return replacePatcherSource(source, (patcherSource) => `${patcherSource}${serviceTierRequestAllowanceRuntimePatchSource()}`);
+}
+
+function findBundledCodexfastTarball() {
+  const vendorDir = path.join(scriptDir, "vendor");
+  if (!fs.existsSync(vendorDir)) return null;
+  const files = fs.readdirSync(vendorDir)
+    .filter((file) => /^codexfast-\d+\.\d+\.\d+\.tgz$/.test(file))
+    .sort();
+  const latest = files.at(-1);
+  return latest ? path.join(vendorDir, latest) : null;
+}
+
+function copyFallbackTarball(tempRoot, npmError) {
+  const explicit = process.env.CODEXFAST_PACKAGE_TARBALL;
+  const fallback = explicit || findBundledCodexfastTarball();
+  if (!fallback || !fs.existsSync(fallback)) throw npmError;
+  const destination = path.join(tempRoot, path.basename(fallback));
+  fs.copyFileSync(fallback, destination);
+  console.warn(`npm pack failed; using bundled codexfast tarball: ${fallback}`);
+  return destination;
+}
+
+function prepareLauncher({ isolatedProfile = null } = {}) {
+  const info = appVersionInfo();
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codexfast-launcher-"));
+  let tarball;
+  const explicitTarball = process.env.CODEXFAST_PACKAGE_TARBALL;
+  if (explicitTarball) {
+    tarball = copyFallbackTarball(tempRoot, new Error(`CODEXFAST_PACKAGE_TARBALL not found: ${explicitTarball}`));
+  } else {
+    try {
+      const packJson = run("npm", ["pack", "codexfast@latest", "--json", "--pack-destination", tempRoot]);
+      const pack = JSON.parse(packJson)[0];
+      tarball = path.join(tempRoot, pack.filename);
+    } catch (error) {
+      tarball = copyFallbackTarball(tempRoot, error);
+    }
+  }
+  run("tar", ["-xzf", tarball, "-C", tempRoot]);
+
+  const sourceLauncher = path.join(tempRoot, "package", "bin", "codexfast");
+  const preparedLauncher = path.join(tempRoot, "codexfast-launcher");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(tempRoot, "package", "package.json"), "utf8"));
+  const description = `${path.basename(appBundle)} ${info.version} build ${info.build} local runtime trial`;
+
+  let source = fs.readFileSync(sourceLauncher, "utf8");
+  source = addAppBundle(source);
+  source = allowWrapperManagedRunningCheck(source);
+  source = disableMainProcessAutomaticUpdateHook(source);
+  source = addVersionToObject(source, info.versionKey, description);
+  source = addVersionToSet(source, "runtimePatchNoPluginsAccessRequiredVersionKeys", info.versionKey);
+  source = addVersionToSet(source, "runtimePatchNoPluginTargetsVersionKeys", info.versionKey);
+  source = addExecutableName(source, info.executable);
+  source = addModelOverride(source);
+  source = disableAutomaticUpdateRuntimeTargets(source);
+  source = addServiceTierRequestAllowanceRuntimePatch(source);
+  source = addCurrentModelRuntimePatch(source);
+  source = preserveRuntimePatchExtensionsAfterTargetFiltering(source);
+  source = addUserDataDir(source, isolatedProfile);
+
+  fs.writeFileSync(preparedLauncher, source, "utf8");
+  fs.chmodSync(preparedLauncher, 0o755);
+
+  return {
+    ...info,
+    appBundle,
+    codexfastVersion: packageJson.version,
+    preparedLauncher,
+    tempRoot,
+  };
+}
+
+function runSelftests(preparedLauncher) {
+  run(process.execPath, [preparedLauncher, "__selftest-cdp-frame"], { stdio: "inherit" });
+  run(process.execPath, [preparedLauncher, "__selftest-runtime-patch-body"], { stdio: "inherit" });
+}
+
+function killProcessesUsingProfile(profile) {
+  const ps = spawnSync("ps", ["ax", "-o", "pid=", "-o", "command="], { encoding: "utf8" });
+  const pids = (ps.stdout ?? "")
+    .split("\n")
+    .filter((line) => line.includes(profile))
+    .map((line) => Number.parseInt(line.trim().split(/\s+/, 1)[0], 10))
+    .filter(Number.isFinite);
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {}
+  }
+  if (pids.length > 0) {
+    sleep(1000);
+  }
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 0);
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
+}
+
+function verifyIsolatedChildEnvironment(profile) {
+  let isolatedMain = null;
+  let appServer = null;
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const processes = readProcesses();
+    isolatedMain = processes.find(
+      (processInfo) => isMainCodexProcess(processInfo) && processInfo.command.includes(`--user-data-dir=${profile}`),
+    );
+    appServer = isolatedMain
+      ? processes.find((processInfo) => isAppServerChild(processInfo, isolatedMain.pid))
+      : null;
+    if (appServer) break;
+    sleep(250);
+  }
+  if (!isolatedMain || !appServer) {
+    throw new Error("Could not find the isolated ChatGPT/Codex App Server process.");
+  }
+
+  const environment = spawnSync("ps", ["eww", "-p", String(appServer.pid), "-o", "command="], {
+    encoding: "utf8",
+  });
+  if (environment.status !== 0) {
+    throw new Error("Could not inspect the isolated App Server environment.");
+  }
+  if ((environment.stdout ?? "").includes("main-process-hook.cjs")) {
+    throw new Error("The codexfast main-process hook leaked into the isolated App Server environment.");
+  }
+  console.log("Isolated child environment self-test passed");
+}
+
+async function isolatedTest() {
+  const profile = path.join(os.tmpdir(), "codexfast-launcher-profile");
+  const codexHome = path.join(profile, "codex-home");
+  fs.rmSync(profile, { recursive: true, force: true });
+  fs.mkdirSync(codexHome, { recursive: true });
+  const prepared = prepareLauncher({ isolatedProfile: profile });
+  runSelftests(prepared.preparedLauncher);
+
+  console.log(`Prepared codexfast ${prepared.codexfastVersion} for ${prepared.versionKey}`);
+  console.log(`Isolated profile: ${profile}`);
+
+  const child = spawn(process.execPath, [prepared.preparedLauncher, "launch"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      CODEX_HOME: codexHome,
+      CODEXFAST_DEBUG_RUNTIME: process.env.CODEXFAST_DEBUG_RUNTIME ?? "0",
+      CODEXFAST_WRAPPER_NO_MAIN_PROCESS: "1",
+    },
+  });
+
+  let output = "";
+  let settled = false;
+  let readySeen = false;
+  let timeout = null;
+  let cleanupTimer = null;
+  const requestedSettleMs = Number.parseInt(process.env.CODEXFAST_ISOLATED_SETTLE_MS ?? "3000", 10);
+  const settleMs = Number.isFinite(requestedSettleMs) ? Math.min(Math.max(requestedSettleMs, 0), 15_000) : 3_000;
+
+  const finish = (code) => {
+    if (settled) return;
+    settled = true;
+    if (timeout) clearTimeout(timeout);
+    if (cleanupTimer) clearTimeout(cleanupTimer);
+    killProcessesUsingProfile(profile);
+    fs.rmSync(profile, { recursive: true, force: true });
+    if (code !== 0) process.exitCode = code;
+  };
+
+  const onData = (chunk) => {
+    const text = chunk.toString();
+    process.stdout.write(text);
+    output += text;
+    if (!settled && !readySeen && output.includes("Runtime launch completed.")) {
+      readySeen = true;
+      try {
+        verifyIsolatedChildEnvironment(profile);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        child.kill("SIGINT");
+        finish(1);
+        return;
+      }
+      console.log(`\nIsolated runtime patch test reached ready state; waiting ${settleMs} ms for deferred resources.`);
+      cleanupTimer = setTimeout(() => {
+        console.log("Isolated runtime patch observation complete; cleaning up test app.");
+        child.kill("SIGINT");
+        finish(0);
+      }, settleMs);
+    }
+  };
+
+  child.stdout.on("data", onData);
+  child.stderr.on("data", onData);
+  child.on("exit", (code) => {
+    if (!settled) finish(code ?? 1);
+  });
+
+  timeout = setTimeout(() => {
+    if (!settled) {
+      console.error("Timed out waiting for isolated runtime patch readiness.");
+      child.kill("SIGINT");
+      finish(1);
+    }
+  }, 70_000);
+}
+
+async function launchNormal() {
+  if (readCodexProcesses().main.length > 0) {
+    console.error("Codex.app is already running. Quit Codex.app first, or run this launcher with `relaunch` from Terminal.");
+    process.exitCode = 1;
+    return;
+  }
+  const prepared = prepareLauncher();
+  runSelftests(prepared.preparedLauncher);
+  console.log(`Prepared codexfast ${prepared.codexfastVersion} for ${prepared.versionKey}`);
+  console.log("This launch does not modify Codex.app. Keep this terminal process running while using Codex.");
+  const child = spawn(process.execPath, [prepared.preparedLauncher, "launch"], {
+    stdio: "inherit",
+    env: { ...process.env, CODEXFAST_WRAPPER_NO_MAIN_PROCESS: "1" },
+  });
+  child.on("exit", (code) => {
+    process.exitCode = code ?? 0;
+  });
+}
+
+async function relaunch({ dryRun = false } = {}) {
+  printStatus();
+  console.log("");
+  if (dryRun) {
+    console.log("Dry run:");
+    console.log("Would request Codex.app to quit only if its main process is running.");
+    console.log("Would wait for the main Codex process to exit.");
+    console.log("Would start runtime patch launch.");
+    return;
+  }
+
+  if (readCodexProcesses().main.length > 0) {
+    console.log("Requesting Codex.app to quit...");
+    if (!requestCodexQuit()) {
+      console.log("AppleScript quit timed out; sending SIGTERM to the main Codex process.");
+      terminateMainCodexProcesses();
+    }
+    if (!waitForMainCodexExit()) {
+      console.error("Main Codex process did not exit within 20 seconds. Quit it manually with Command-Q, then run `launch` again.");
+      process.exitCode = 1;
+      return;
+    }
+    console.log("Codex.app exited.");
+  } else if (readCodexProcesses().support.length > 0) {
+    console.log("Only Codex support processes are still present; continuing with runtime patch launch.");
+  }
+
+  await launchNormal();
+}
+
+function selftestProcessClassification() {
+  const originalAppBundle = appBundle;
+  const originalExecutable = path.join(originalAppBundle, "Contents", "MacOS", appVersionInfo().executable);
+  const bareOnly = classifyCodexProcesses([
+    parseProcessLine(`2087 1 S ${originalAppBundle}/Contents/Resources/native/bare-modifier-monitor --key DoubleCommand --immediate`),
+  ].filter(Boolean));
+  if (bareOnly.main.length !== 0 || bareOnly.support.length !== 1) {
+    throw new Error("bare-modifier-monitor should be classified as a support process only");
+  }
+
+  const withMain = classifyCodexProcesses([
+    parseProcessLine(`2087 1 S ${originalAppBundle}/Contents/Resources/native/bare-modifier-monitor --key DoubleCommand --immediate`),
+    parseProcessLine(`5916 1 S ${originalExecutable}`),
+  ].filter(Boolean));
+  if (withMain.main.length !== 1 || withMain.support.length !== 1) {
+    throw new Error("main Codex executable should be classified as the main process");
+  }
+
+  const externalAppServer = parseProcessLine(
+    "5917 5916 S /Users/example/.local/share/codex-history-fix/bin/codex -c features.code_mode_host=true app-server --listen stdio://",
+  );
+  if (!isAppServerChild(externalAppServer, 5916) || isAppServerChild(externalAppServer, 2087)) {
+    throw new Error("an external App Server executable should be recognized only as a child of the isolated main process");
+  }
+
+  console.log("Process classification self-test passed");
+}
+
+async function main() {
+  const command = process.argv[2] ?? "launch";
+  if (command === "__selftest-process-classification") {
+    selftestProcessClassification();
+    return;
+  }
+  if (command === "prepare") {
+    const prepared = prepareLauncher();
+    runSelftests(prepared.preparedLauncher);
+    console.log(JSON.stringify(prepared, null, 2));
+    return;
+  }
+  if (command === "isolated-test") {
+    await isolatedTest();
+    return;
+  }
+  if (command === "launch") {
+    await launchNormal();
+    return;
+  }
+  if (command === "status") {
+    printStatus();
+    return;
+  }
+  if (command === "relaunch") {
+    await relaunch({ dryRun: process.argv.includes("--dry-run") });
+    return;
+  }
+  console.error("Usage: codexfast-launcher.mjs [launch|relaunch|status|isolated-test|prepare]");
+  process.exitCode = 2;
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});
